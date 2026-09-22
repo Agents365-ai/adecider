@@ -106,6 +106,11 @@ export async function startFakeLaya(options?: {
   healthStatus?: number;
   /** Model id this fake advertises over the OpenAI-compatible routes. */
   openaiModel?: string;
+  /**
+   * Raw answers for the OpenAI-compatible route, keyed by question id, so a chat dialect can carry
+   * the same numbers as a family payload. Defaults to `{value: echo, probability: echo}` per id.
+   */
+  chatAnswers?: Record<string, unknown>;
   /** Answer every question the request asks, at this probability, instead of a fixed payload. */
   echo?: number;
   onDecide?: (body: Record<string, unknown>) => unknown | undefined;
@@ -153,7 +158,8 @@ export async function startFakeLaya(options?: {
         const ids = [...prompt.matchAll(/"([A-Za-z0-9_]+)":\s*\{\s*"type"/g)].map((match) => match[1] as string);
         const answers: Record<string, unknown> = {};
         for (const id of ids) {
-          answers[id] = { value: options?.echo ?? 0.9, probability: options?.echo ?? 0.9 };
+          answers[id] =
+            options?.chatAnswers?.[id] ?? { value: options?.echo ?? 0.9, probability: options?.echo ?? 0.9 };
         }
         response.writeHead(200, { "content-type": "application/json" });
         response.end(

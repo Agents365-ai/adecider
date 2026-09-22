@@ -47,11 +47,12 @@ class Cli {
     fs.writeFileSync(this.configPath, JSON.stringify(config));
   }
 
-  run(entry: string, args: string[]): Promise<CliResult> {
+  run(entry: string, args: string[], options: { input?: string } = {}): Promise<CliResult> {
     return new Promise((resolve) => {
       const child = spawn(process.execPath, [entry, ...args], {
         cwd: REPO,
         env: { ...process.env, ADECIDER_CONFIG: this.configPath },
+        stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "";
       let stderr = "";
@@ -60,6 +61,8 @@ class Cli {
       child.stdout.on("data", (chunk: string) => (stdout += chunk));
       child.stderr.on("data", (chunk: string) => (stderr += chunk));
       child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
+      // Closed on every run: a child that sees an open pipe could wait for input that never comes.
+      child.stdin.end(options.input ?? "");
     });
   }
 
@@ -235,6 +238,117 @@ test("status --json reports health, calibration, and which backend answers unnam
     assert.deepEqual(status.chain, ["fake"]);
     assert.equal(status.allowCloud, false);
   } finally {
+    cli.cleanup();
+    await fake.close();
+  }
+});
+
+test("judge reads state and questions from the file, the JSON flag, and a pipe", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const cli = new Cli(localChain(fake.url));
+  const questionsPath = path.join(cli.dir, "questions.json");
+  const statePath = path.join(cli.dir, "state.patch");
+  fs.writeFileSync(questionsPath, QUESTIONS);
+  fs.writeFileSync(statePath, "a duplicate charge was refunded twice\n");
+  try {
+    const fromFiles = await cli.run(MAIN, ["judge", "--state-file", statePath, "--questions", `@${questionsPath}`]);
+    assert.equal(fromFiles.code, 0, fromFiles.stderr);
+    assert.equal((JSON.parse(fromFiles.stdout) as { backend: string }).backend, "fake");
+    assert.equal(fake.decideRequests[0]?.["state"], "a duplicate charge was refunded twice\n", "the file content is the state, verbatim");
+
+    const fromJson = await cli.run(MAIN, ["judge", "--state-json", '{"charge":"duplicate"}', "--questions", QUESTIONS]);
+    assert.equal(fromJson.code, 0, fromJson.stderr);
+    assert.deepEqual(fake.decideRequests[1]?.["state"], { charge: "duplicate" }, "--state-json sends JSON, not its text");
+
+    const fromPipe = await cli.run(MAIN, ["judge", "--questions", QUESTIONS], { input: "a duplicate charge" });
+    assert.equal(fromPipe.code, 0, fromPipe.stderr);
+    assert.equal(fake.decideRequests[2]?.["state"], "a duplicate charge");
+  } finally {
+    cli.cleanup();
+    await fake.close();
+  }
+});
+
+test("judge names what is missing instead of guessing at a state", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const cli = new Cli(localChain(fake.url));
+  try {
+    const noState = await cli.run(MAIN, ["judge", "--questions", QUESTIONS]);
+    assert.equal(noState.code, 2);
+    assert.match(noState.stderr, /no state supplied: pass --state <text>, --state-file <path>, --state-json <json>, or pipe it on stdin/);
+
+    const noQuestions = await cli.run(MAIN, ["judge", "--state", "x"]);
+    assert.equal(noQuestions.code, 2);
+    assert.match(noQuestions.stderr, /no questions supplied/);
+
+    const wrongShape = await cli.run(MAIN, ["judge", "--state", "x", "--questions", "[1, 2]"]);
+    assert.equal(wrongShape.code, 2);
+    assert.match(wrongShape.stderr, /questions must be a JSON object mapping ids to questions/);
+    assert.equal(fake.decideRequests.length, 0, "none of these reached a backend");
+  } finally {
+    cli.cleanup();
+    await fake.close();
+  }
+});
+
+test("serve answers every route on a real socket and stops on a signal", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const cli = new Cli(localChain(fake.url));
+  const child = spawn(process.execPath, [MAIN, "serve", "--port", "0"], {
+    cwd: REPO,
+    env: { ...process.env, ADECIDER_CONFIG: path.join(cli.dir, "adecider.json") },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  const started = new Promise<string>((resolve, reject) => {
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+      const match = stderr.match(/listening on (http:\/\/127\.0\.0\.1:\d+)/);
+      if (match?.[1]) resolve(match[1]);
+    });
+    child.on("error", reject);
+  });
+
+  try {
+    // Port 0 means the kernel picks one, so a busy machine cannot make this test flaky.
+    const url = await started;
+    const health = await fetch(`${url}/health`);
+    assert.equal(health.status, 200);
+    const healthBody = (await health.json()) as { backends: Array<{ name: string; ok: boolean }> };
+    assert.equal(healthBody.backends.find((backend) => backend.name === "fake")?.ok, true);
+
+    const models = (await (await fetch(`${url}/models`)).json()) as { models: Array<{ id: string }> };
+    assert.deepEqual(models.models.map((entry) => entry.id), ["fake:english"]);
+
+    const route = await fetch(`${url}/route`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "english" }),
+    });
+    assert.equal(route.status, 200);
+    assert.equal(((await route.json()) as { checkpoint: string }).checkpoint, "english");
+
+    const decide = await fetch(`${url}/decide`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: "refunded twice", questions: JSON.parse(QUESTIONS), threshold: 0.7 }),
+    });
+    assert.equal(decide.status, 200);
+    const decided = (await decide.json()) as { decisions: Array<{ passed: boolean }> };
+    assert.deepEqual(decided.decisions.map((decision) => decision.passed), [true]);
+
+    const refused = await fetch(`${url}/decide`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: "x", questions: { bad: { type: "nope", instructions: "?" } } }),
+    });
+    assert.equal(refused.status, 400, "a request this layer refuses is 400, not a backend status");
+    assert.equal(((await refused.json()) as { code: string }).code, "bad_request");
+  } finally {
+    child.kill("SIGTERM");
+    const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
+    assert.equal(code, 0, "a signal is a clean shutdown, not a crash");
     cli.cleanup();
     await fake.close();
   }

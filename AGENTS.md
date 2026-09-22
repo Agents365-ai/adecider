@@ -110,9 +110,19 @@ was written against. So:
 - Do not write counts that rot into documentation. `npm test` prints its own count, so point at the
   command; the README's own written count was 29 while the suite ran 59.
 - Hermetic tests use `test/helpers/fake-laya.ts`, which replays a payload measured from `laya-mlx`
-  including the fields Jev does not return. `test/live.test.ts` is the exception: it asserts the real
-  calibration margin and **skips, never fails**, when nothing listens, because the Laya repos were
-  archived off this machine on 2026-09-21 and 8317/8318 are often down.
+  including the fields Jev does not return. `test/conformance.test.ts` is the anti-drift net: the same
+  numbers delivered in the Laya, Jev, and chat encodings must normalize to the same answers and the
+  same verdicts, and a payload that drifts out of contract must fail as `bad_response` rather than be
+  guessed at.
+- Wall-clock latency is a measurement, not a contract: keep the numbers in `README.md` and never assert
+  a duration in a test on a shared machine. What a latency regression actually was is an adapter that
+  fans one judgment out into one request per question, so that is what is asserted (a fixed round-trip
+  count for 1, 5, and 12 questions).
+- `test/live.test.ts` is the exception to hermeticity: it asserts the real calibration margin and the
+  agreement between two running services, and **skips, never fails**, when nothing listens, because the
+  Laya repos were archived off this machine on 2026-09-21 and 8317/8318 are often down.
+  `ADECIDER_LIVE_URLS=name=url,...` points it at services elsewhere, which is also how its non-skipping
+  branches are checked without a model.
 - The MCP surface is tested end to end by spawning the server and speaking JSON-RPC to it; a change to
   `decide` needs that path covered, not just the unit. `test/cli.test.ts` does the same for the two
   CLI entry points (exit codes, stdout contract, `--fail-open`), and `test/jev.test.ts` holds the Jev

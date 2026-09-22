@@ -19,6 +19,19 @@ const CANDIDATES = [
   { name: "laya", baseUrl: "http://127.0.0.1:8318" },
 ];
 
+/**
+ * Where the local services are expected. `ADECIDER_LIVE_URLS=name=url,name=url` points this file at
+ * services running elsewhere, which is also how the suite itself is checked before a model is up.
+ */
+function candidates(): Array<{ name: string; baseUrl: string }> {
+  const raw = process.env["ADECIDER_LIVE_URLS"]?.trim();
+  if (!raw) return CANDIDATES;
+  return raw.split(",").map((pair) => {
+    const [name, baseUrl] = pair.split("=");
+    return { name: (name ?? "").trim(), baseUrl: (baseUrl ?? "").trim() };
+  });
+}
+
 function configFor(name: string, baseUrl: string): SystemOneConfig {
   return {
     chain: [name],
@@ -28,13 +41,19 @@ function configFor(name: string, baseUrl: string): SystemOneConfig {
   };
 }
 
-async function anyLiveBackend(): Promise<{ name: string; chain: BackendChain } | null> {
-  for (const candidate of CANDIDATES) {
+async function allLiveBackends(): Promise<Array<{ name: string; chain: BackendChain }>> {
+  const up: Array<{ name: string; chain: BackendChain }> = [];
+  for (const candidate of candidates()) {
     const chain = BackendChain.fromConfig(configFor(candidate.name, candidate.baseUrl));
     const health = await chain.health(candidate.name);
-    if (health.ok) return { name: candidate.name, chain };
+    if (health.ok) up.push({ name: candidate.name, chain });
   }
-  return null;
+  return up;
+}
+
+async function anyLiveBackend(): Promise<{ name: string; chain: BackendChain } | null> {
+  const [first] = await allLiveBackends();
+  return first ?? null;
 }
 
 const QUESTION = {
@@ -133,8 +152,7 @@ test("the live response carries the fields this layer depends on", async (t) => 
   assert.equal(decisions.length, 1);
 });
 
-test("an explicit backend that is down fails instead of falling back", async (t) => {
-  const chain = BackendChain.fromConfig(configFor("laya", "http://127.0.0.1:8318"));
+test("an explicit backend that is down fails instead of falling back", async (t) => {  const chain = BackendChain.fromConfig(configFor("laya", "http://127.0.0.1:8318"));
   try {
     await judge({ state: "x", questions: QUESTION, backend: "laya" }, { chain });
   } catch (error) {
@@ -146,4 +164,52 @@ test("an explicit backend that is down fails instead of falling back", async (t)
     return;
   }
   t.skip("the reference service on 8318 happens to be running, so there is nothing to assert");
+});
+
+test("when two local services answer, they agree on clear-cut cases", async (t) => {
+  // Milestone 7's agreement suite. Without labels, agreement between two backends on a fixed case set
+  // is the cheapest calibration signal there is, and it is only meaningful against real models: the
+  // encodings are pinned hermetically in conformance.test.ts. Both services are optional dependencies,
+  // so this skips rather than fails when one of them is down.
+  const live = await allLiveBackends();
+  const [first, second] = live;
+  if (!first || !second) {
+    t.skip(`needs two local services, found ${live.map((entry) => entry.name).join(", ") || "none"}`);
+    return;
+  }
+
+  const cases = [...POSITIVE, ...NEGATIVE];
+  const scores: Record<string, number[]> = {};
+  const passed: Record<string, boolean[]> = {};
+  for (const entry of [first, second]) {
+    scores[entry.name] = [];
+    passed[entry.name] = [];
+    for (const state of cases) {
+      const output = await judge({ state, questions: QUESTION, threshold: 0.5 }, { chain: entry.chain });
+      const decision = output.decisions?.[0];
+      assert.ok(decision, `${entry.name}: a thresholded judgment produces a verdict`);
+      scores[entry.name]?.push(decision.score);
+      passed[entry.name]?.push(decision.passed);
+    }
+  }
+
+  const firstPassed = passed[first.name] ?? [];
+  const secondPassed = passed[second.name] ?? [];
+  const verdictAgreement = cases.filter((_, index) => firstPassed[index] === secondPassed[index]).length / cases.length;
+  assert.equal(
+    verdictAgreement,
+    1,
+    `${first.name} vs ${second.name} disagree on clear-cut cases: ` +
+      `${first.name} ${JSON.stringify(scores[first.name]?.map((score) => score.toFixed(2)))} vs ` +
+      `${second.name} ${JSON.stringify(scores[second.name]?.map((score) => score.toFixed(2)))} ` +
+      `(positives first, then negatives)`
+  );
+
+  // Agreement on verdicts is the claim; the mean absolute difference is the measurement behind it.
+  const deltas = (scores[first.name] ?? []).map((score, index) => Math.abs(score - (scores[second.name]?.[index] ?? score)));
+  const meanDelta = deltas.reduce((sum, delta) => sum + delta, 0) / deltas.length;
+  assert.ok(
+    meanDelta <= 0.5,
+    `${first.name} and ${second.name} agree on verdicts but differ by ${meanDelta.toFixed(3)} on average`
+  );
 });
