@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { SystemOneRequest, SystemOneResponse } from "../types.ts";
+import type { Question, SystemOneRequest, SystemOneResponse } from "../types.ts";
 import { SystemOneError } from "../errors.ts";
 import { normalizeFamilyResponse } from "../normalize.ts";
 import {
@@ -24,6 +24,41 @@ import {
 
 export const DEFAULT_JEV_MODEL = "jev-latest";
 const DEFAULT_BASE_URL = "https://api.typesafe.ai/v1/systemone";
+
+/**
+ * Jev's `noul` variant reads `criteria` as an object, while this layer's public type carries a
+ * clarification string, which is the dialect the local Laya services take. Measured on 2026-09-24:
+ * a string is rejected with HTTP 422 naming `questions.<id>.noul.criteria`, an object is accepted,
+ * and the answer is the same with the field as without it (0.67 either way) because Jev reads the
+ * instructions. Rewriting it once here keeps the public request shape backend-agnostic; a request
+ * that this layer accepts must not fail on the dialect of whichever backend answers it.
+ */
+function jevQuestions(questions: Record<string, Question>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [id, question] of Object.entries(questions)) {
+    out[id] =
+      question.type === "noul" && typeof question.criteria === "string"
+        ? { type: "noul", instructions: question.instructions, criteria: { clarification: question.criteria } }
+        : question;
+  }
+  return out;
+}
+
+/**
+ * What went wrong, for a caller who has to act on it. Jev answers a rejected payload with FastAPI's
+ * `detail` rather than the `error` field the other backends use, so reading only `error` reported an
+ * unactionable "HTTP 422 Unprocessable Entity" while the body named the offending field.
+ */
+function errorDetail(payload: unknown, status: number, statusText: string): string {
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const body = payload as Record<string, unknown>;
+    const named = body["error"] ?? body["detail"];
+    if (named !== undefined) return JSON.stringify(named).slice(0, 400);
+  }
+  const text = typeof payload === "string" ? payload.trim() : "";
+  if (text.length > 0) return text.slice(0, 400);
+  return `HTTP ${status} ${statusText}`;
+}
 
 export function resolveJevApiKey(explicit?: string): { key: string; origin: string } | null {
   const fromSpec = explicit?.trim();
@@ -109,7 +144,7 @@ export function createJevBackend(spec: BackendSpec): Backend {
       const body = {
         state: request.state,
         model: request.model ?? spec.model ?? DEFAULT_JEV_MODEL,
-        questions: request.questions,
+        questions: jevQuestions(request.questions),
       };
 
       const started = performance.now();
@@ -139,10 +174,7 @@ export function createJevBackend(spec: BackendSpec): Backend {
       }
       if (!response.ok) {
         // Never echo the request headers; the key lives there.
-        const detail =
-          payload && typeof payload === "object" && "error" in payload
-            ? JSON.stringify((payload as { error: unknown }).error).slice(0, 400)
-            : `HTTP ${response.status} ${response.statusText}`;
+        const detail = errorDetail(payload, response.status, response.statusText);
         const code = statusErrorCode(response.status);
         throw new SystemOneError(
           code,

@@ -2,9 +2,10 @@
  * The pi adapter: adecider's non-portable half.
  *
  * Everything here needs to run inside the pi process, because it reacts to events pi emits and calls
- * into pi's own state (active tools, session model, compaction). The portable half stays in
- * `src/core`: backends, normalization, decision rules, and the MCP server. Both halves call the same
- * `judge()`, so a judgment cannot differ depending on how it was reached.
+ * into pi's own state (active tools, session model, compaction). The portable half stays at `src/` top
+ * level with `src/backends`, `src/mcp`, `src/server`, and `src/cli`: backends, normalization, decision
+ * rules, and the MCP server. Both halves call the same `judge()`, so a judgment cannot differ
+ * depending on how it was reached.
  *
  * Feature defaults match pi-jev: everything automatic is off. `/adecider status` reports what is on.
  */

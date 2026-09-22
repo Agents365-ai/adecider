@@ -93,7 +93,7 @@ An OpenAI-compatible backend counts as cloud when its URL is not loopback.
 
 | Harness | How it connects | What works |
 |---|---|---|
-| pi | native extension **and** MCP | everything: judge, gate, tool routing, skill suggestions, auto mode, model selection, tool guard, compaction, orchestration |
+| pi | native extension, auto-registered by the package; MCP as a fallback | everything: judge, gate, tool routing, skill suggestions, auto mode, model selection, tool guard, compaction, orchestration |
 | Claude Code | MCP, `~/.claude.json` | judge, gate |
 | Codex | MCP, `~/.codex/config.toml` | judge, gate |
 | mini-swe-agent and anything else | MCP or the CLI | judge, gate |
@@ -317,7 +317,10 @@ One tool, `decide`.
 
 Question types, and what each returns:
 
-- `noul`: probability that a statement is true, in `[0,1]`.
+- `noul`: probability that a statement is true, in `[0,1]`. A `criteria` string on a `noul` question
+  is a clarification. Laya takes it as written; the Jev adapter rewrites it into the object form that
+  API requires, and Jev's answer does not depend on it (measured: 0.67 with the field and without it,
+  where the string form is rejected outright with HTTP 422).
 - `choice`: exactly one option from `criteria`, an object mapping option keys to descriptions.
   Returns the winner plus the full distribution.
 - `score`: one level from `criteria`, an array of rubric levels ordered lowest first. Returns the
@@ -375,13 +378,16 @@ dependencies.
 
 ```console
 npm run typecheck      # tsc --noEmit
-npm test               # 29 tests; hermetic except the two live ones, which skip if nothing listens
+npm test               # hermetic, and prints its own count; the two live ones skip if nothing listens
+npm run check          # typecheck then the suite: the one command to run before claiming a change works
 npm run status         # probe the chain
 ```
 
 Tests cover normalization against payloads measured from the real backends, the decision rules, the
-CLI, and the full MCP surface by spawning the server and speaking JSON-RPC to it. The live tests
-assert the calibration margin and skip, rather than fail, when no local service is up.
+Jev wire contract against a local stand-in, the CLI entry points as a process (exit codes, stdout
+contract), the three pi tools through a fake pi API, and the full MCP surface by spawning the server
+and speaking JSON-RPC to it. The live tests assert the calibration margin and skip, rather than fail,
+when no local service is up.
 
 ## Limits
 

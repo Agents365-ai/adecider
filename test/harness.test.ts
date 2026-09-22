@@ -1,10 +1,10 @@
 /**
- * Tests for the pi adapter's decision-bearing parts.
+ * Tests for the pi adapter's decision-bearing parts and its tool surface.
  *
- * Tool activation, model switching, and event wiring need a live pi process and are not covered
- * here. What is covered is the logic those paths depend on, including the calibration rule that
- * decides whether a feature may act on a number at all, driven by a fake backend that answers
- * whatever question ids the code asks.
+ * A live pi process is what activates tools, switches models, and emits events, so session wiring is
+ * not covered here. What is covered is the logic those paths depend on, including the calibration
+ * rule that decides whether a feature may act on a number at all, and the three registered tools,
+ * driven by a fake backend that answers whatever question ids the code asks.
  */
 
 import { test } from "node:test";
@@ -19,9 +19,10 @@ import { Compactor } from "../src/harness/pi/compact.ts";
 import { routeTools } from "../src/harness/pi/router.ts";
 import { findSkills } from "../src/harness/pi/skills.ts";
 import { ToolGuard } from "../src/harness/pi/tool-guard.ts";
+import { registerAdapterTools, PI_TOOL_NAMES } from "../src/harness/pi/tools.ts";
 import { BackendChain } from "../src/backends/index.ts";
 import type { SystemOneConfig } from "../src/config.ts";
-import { startFakeLaya, type FakeLaya } from "./helpers/fake-laya.ts";
+import { startFakeLaya, THREE_QUESTIONS, type FakeLaya } from "./helpers/fake-laya.ts";
 
 function chainFor(fake: FakeLaya): BackendChain {
   const config: SystemOneConfig = {
@@ -44,9 +45,30 @@ interface FakePiOptions {
   skills?: Array<{ name: string; description: string }>;
 }
 
-function fakePi(options: FakePiOptions): { api: ExtensionAPI; active: () => string[] } {
+/** What `registerTool` is handed, reduced to what these tests call and assert. */
+interface FakeTool {
+  name: string;
+  description: string;
+  parameters: unknown;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+    onUpdate?: (update: unknown) => void
+  ) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown; isError?: boolean }>;
+}
+
+function fakePi(options: FakePiOptions): {
+  api: ExtensionAPI;
+  active: () => string[];
+  registered: Map<string, FakeTool>;
+} {
   let active = [...(options.active ?? [])];
+  const registered = new Map<string, FakeTool>();
   const api = {
+    registerTool: (tool: FakeTool) => {
+      registered.set(tool.name, tool);
+    },
     getActiveTools: () => active,
     setActiveTools: (names: string[]) => {
       active = names;
@@ -67,11 +89,10 @@ function fakePi(options: FakePiOptions): { api: ExtensionAPI; active: () => stri
         sourceInfo: { path: `/skills/${skill.name}/SKILL.md` },
       })),
   };
-  return { api: api as unknown as ExtensionAPI, active: () => active };
+  return { api: api as unknown as ExtensionAPI, active: () => active, registered };
 }
 
-const INACTIVE = [
-  { name: "ast_grep_search", description: "Find code patterns structurally across the repository" },
+const INACTIVE = [  { name: "ast_grep_search", description: "Find code patterns structurally across the repository" },
   { name: "lsp_navigation", description: "Jump to definitions and references in code" },
   { name: "web_search", description: "Search the web for current information" },
 ];
@@ -499,4 +520,108 @@ test("compaction declines when it is off, and when there is no history", async (
 
   const on = new Compactor(() => null, true);
   assert.equal((await on.compact({ branchEntries: [] }, {} as never)).skipped, "no-backend");
+});
+
+test("the adapter registers exactly the three tool names a pi-jev migration maps onto", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const pi = fakePi({ active: [], inactive: INACTIVE });
+    registerAdapterTools(pi.api, () => chainFor(fake));
+
+    assert.deepEqual([...pi.registered.keys()].sort(), [...PI_TOOL_NAMES].sort());
+    // The description is what an agent routes on, so it has to state the contract, not the vendor.
+    assert.match(pi.registered.get("adecider_evaluate")?.description ?? "", /calibrated answer/);
+    assert.ok(
+      pi.registered.get("adecider_find_tools")?.description.includes("activate"),
+      "routing is the half that only exists inside pi, so the tool has to say that it acts"
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
+test("adecider_evaluate returns the judgment as content and as details, and fails as a tool result", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const pi = fakePi({ active: [], inactive: [] });
+    registerAdapterTools(pi.api, () => chainFor(fake));
+    const evaluate = pi.registered.get("adecider_evaluate");
+    assert.ok(evaluate);
+
+    const result = await evaluate.execute("call-1", {
+      state: "a duplicate charge",
+      questions: THREE_QUESTIONS,
+      threshold: 0.7,
+    });
+    assert.equal(result.isError, undefined);
+    const output = JSON.parse(result.content[0]?.text ?? "{}") as { backend: string; decisions: Array<{ passed: boolean }> };
+    assert.equal(output.backend, "fake");
+    assert.equal(output.decisions.length, 3);
+    assert.deepEqual(result.details, output, "details carry the same object the text renders");
+  } finally {
+    await fake.close();
+  }
+
+  // A backend that cannot answer is a tool error, not a thrown exception: the call was well formed.
+  const dead: SystemOneConfig = {
+    chain: ["dead"],
+    backends: { dead: { name: "dead", kind: "laya", baseUrl: "http://127.0.0.1:9", timeoutMs: 1200 } },
+    allowCloud: false,
+    configPath: "<test>",
+  };
+  const broken = fakePi({ active: [], inactive: [] });
+  registerAdapterTools(broken.api, () => BackendChain.fromConfig(dead));
+  const failure = await broken.registered.get("adecider_evaluate")?.execute("call-2", {
+    state: "x",
+    questions: THREE_QUESTIONS,
+  });
+  assert.equal(failure?.isError, true);
+  assert.match(failure?.content[0]?.text ?? "", /Evaluation failed: unreachable/);
+});
+
+test("adecider_find_tools activates what it judged, and spends nothing when nothing matches", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const pi = fakePi({ active: ["read"], inactive: INACTIVE });
+    registerAdapterTools(pi.api, () => chainFor(fake));
+    const findTools = pi.registered.get("adecider_find_tools");
+    assert.ok(findTools);
+
+    const routed = await findTools.execute("call-1", { query: "find code definitions and references" });
+    assert.match(routed.content[0]?.text ?? "", /Activated \d+ tool\(s\)/);
+    assert.ok(pi.active().includes("ast_grep_search"), "the judged tool is active for this session");
+    assert.equal(pi.active().includes("web_search"), false, "and an unrelated candidate was never offered");
+
+    const requests = fake.decideRequests.length;
+    const empty = await findTools.execute("call-2", { query: "the and of it" });
+    assert.match(empty.content[0]?.text ?? "", /no inactive tool shares a term/i);
+    assert.equal(fake.decideRequests.length, requests, "no candidate match means no backend request");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("adecider_find_skill suggests loaded skills, and says so plainly when none are loaded", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const pi = fakePi({
+      active: [],
+      inactive: [],
+      skills: [{ name: "pdf", description: "Read, split, merge, and OCR PDF documents" }],
+    });
+    registerAdapterTools(pi.api, () => chainFor(fake));
+    const findSkill = pi.registered.get("adecider_find_skill");
+    assert.ok(findSkill);
+
+    const suggested = await findSkill.execute("call-1", { query: "split a PDF into pages" });
+    assert.match(suggested.content[0]?.text ?? "", /Matching skills/);
+    assert.match(suggested.content[0]?.text ?? "", /\/skill:pdf/);
+
+    const bare = fakePi({ active: [], inactive: [] });
+    registerAdapterTools(bare.api, () => chainFor(fake));
+    const none = await bare.registered.get("adecider_find_skill")?.execute("call-2", { query: "split a PDF" });
+    assert.match(none?.content[0]?.text ?? "", /No skills are loaded in this session/);
+  } finally {
+    await fake.close();
+  }
 });

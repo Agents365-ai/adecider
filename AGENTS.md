@@ -42,13 +42,14 @@ registers `/adecider`, and the features are `auto.ts`, `router.ts`, `skills.ts`,
 which is the whole reason routing, gating, compaction and orchestration live here and not in the core.
 
 `fixtures/laya-mlx/` holds wire payloads recorded from the live service with curl. They are test
-evidence, not samples: do not hand-edit them, re-record instead.
 
+evidence, not samples: do not hand-edit them, re-record instead.
 ## Commands
 
 ```console
 npm run typecheck        # tsc --noEmit, strict; run this before claiming a change works
 npm test                 # node --test test/*.test.ts; hermetic except live.test.ts
+npm run check            # typecheck then the suite in one command
 npm run status           # probe the chain, print health/calibration/local per backend
 npm run models           # the model catalogue as a caller sees it
 npm run serve            # one HTTP format over every model
@@ -76,7 +77,9 @@ test, do not delete it.
 3. **A named backend never falls back.** `--backend` is a hard constraint. An outage is `unreachable`,
    reported with the probes that failed, never another backend's answer.
 4. **Failure is typed, never a default.** Every path that cannot answer returns a `SystemOneError`
-   code. `busy` exists so an overloaded backend is not reported as the caller's mistake.
+   code. `busy` exists so an overloaded backend is not reported as the caller's mistake. A rejected
+   payload must name the field: Jev answers a bad request with FastAPI's `detail`, which is why
+   `errorDetail()` reads `detail` as well as `error` rather than printing the status line.
 5. **Privacy is a boundary, not a preference.** The automatic chain is local. Jev is nameable while
    absent from the chain; a present key is not consent to send state off the machine. `allowCloud` /
    `ADECIDER_ALLOW_CLOUD=1` are the only two switches, both off by default. A loopback URL is local.
@@ -89,7 +92,12 @@ test, do not delete it.
 8. **One judgment path.** CLI, MCP, HTTP and every pi feature call the same `judge()`; adapter-level
    rules go through `src/harness/pi/decisions.ts` so calibration discipline cannot drift feature by
    feature.
-9. **Automatic features are off by default**, matching pi-jev. `/adecider status` reports what is on.
+9. **One request dialect, whatever answers.** `noul.criteria` is a clarification string in the public
+   type, which is Laya's dialect. Jev accepts only an object there and ignores the value (measured
+   2026-09-24: a string is HTTP 422, an object is 200, and the probability is 0.67 either way), so
+   `jevQuestions()` in `src/backends/jev.ts` rewrites it. A request shape this layer accepts must not
+   fail on the dialect of the backend that happens to answer it; `test/jev.test.ts` pins both halves.
+10. **Automatic features are off by default**, matching pi-jev. `/adecider status` reports what is on.
    Auto mode is the only feature that spends a request per prompt.
 
 ## Verification culture
@@ -99,17 +107,21 @@ was written against. So:
 
 - A number you add to `README.md` or a doc comment must come from a command you actually ran, with the
   date and the machine where that matters. Prefer re-running over copying an old figure.
-- Do not write counts that rot into documentation (the README's "29 tests" is already stale). Point at
-  the command instead.
+- Do not write counts that rot into documentation. `npm test` prints its own count, so point at the
+  command; the README's own written count was 29 while the suite ran 59.
 - Hermetic tests use `test/helpers/fake-laya.ts`, which replays a payload measured from `laya-mlx`
   including the fields Jev does not return. `test/live.test.ts` is the exception: it asserts the real
   calibration margin and **skips, never fails**, when nothing listens, because the Laya repos were
   archived off this machine on 2026-09-21 and 8317/8318 are often down.
 - The MCP surface is tested end to end by spawning the server and speaking JSON-RPC to it; a change to
-  `decide` needs that path covered, not just the unit.
-- pi-adapter behaviour that needs a live process (tool activation, model switching, event wiring) is
-  not covered by `npm test`. Verify it in a real session with `pi -ne -e ./src/harness/pi/index.ts`,
-  and check `/adecider status` output rather than trusting the wiring by reading it.
+  `decide` needs that path covered, not just the unit. `test/cli.test.ts` does the same for the two
+  CLI entry points (exit codes, stdout contract, `--fail-open`), and `test/jev.test.ts` holds the Jev
+  wire contract against a local stand-in because the real API is billed.
+- pi-adapter behaviour that needs a live session (model switching, event wiring, whether a tool really
+  becomes selectable) is not covered by `npm test`. The three tool handlers and the routing decisions
+  they call are: `test/harness.test.ts` registers them through a fake pi API. For the rest, verify in
+  a real session with `pi -ne -e ./src/harness/pi/index.ts` and check `/adecider status` output rather
+  than trusting the wiring by reading it.
 
 ## Conventions
 
@@ -133,9 +145,9 @@ was written against. So:
 - The Laya services default to `127.0.0.1:8317` (MLX, launchd) and `8318` (PyTorch/MPS, on demand).
   Both are often absent, and absence is normal, not a bug: health failures produce no catalogue rows.
 - Never probe a down backend in a retry loop. Health results are cached for 5 seconds for this reason.
-- `src/harness/pi/index.ts` says the portable half lives in `src/core`. There is no `src/core`; the
-  portable half is `src/` top level plus `src/backends`, `src/mcp`, `src/server`, `src/cli`. Treat the
-  comment as stale, do not create the directory to satisfy it.
+- A `noul` question carrying `criteria` is the one place the backends disagree on request shape; see
+  invariant 9 before touching `src/types.ts`, `src/judge.ts` validation, or either backend's request
+  builder.
 - The HTTP server holds a global lock on the accelerator, so judgements serialize; a burst of parallel
   calls queues rather than failing fast.
 - `npm run smoke` and any live test may be affected by whatever is running on 8317/8318 at that

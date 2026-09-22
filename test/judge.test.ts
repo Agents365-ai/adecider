@@ -61,6 +61,31 @@ test("a threshold produces verdicts and a topK switches to ranking", async () =>
   }
 });
 
+test("a judgment on a local chain opens no connection that is not loopback", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const seen: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = ((input: Request | string | URL, init?: RequestInit) => {
+    seen.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    return real(input, init);
+  }) as typeof fetch;
+  try {
+    await judge({ state: "a duplicate charge", questions: THREE_QUESTIONS }, { chain: chainFor(fake) });
+  } finally {
+    globalThis.fetch = real;
+    await fake.close();
+  }
+
+  assert.ok(seen.length > 0, "the local backend was really reached, so this is not a vacuous pass");
+  for (const url of seen) {
+    assert.match(
+      new URL(url).hostname,
+      /^(127\.0\.0\.1|localhost|\[::1\]|::1)$/,
+      `README claims nothing leaves the machine with a local backend, but this judgment fetched ${url}`
+    );
+  }
+});
+
 test("a backend that answers with an error becomes a typed failure", async () => {
   const fake = await startFakeLaya({
     onDecide: () => ({ error: "request is missing 'state'" }),

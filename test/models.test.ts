@@ -70,6 +70,20 @@ test("the catalogue lists every nameable model, with the window its checkpoint a
   }
 });
 
+test("a cloud backend in the chain is dropped until cloud use is allowed explicitly", () => {
+  const denied = chainOf({ jev: { name: "jev", kind: "jev", model: "jev-latest" } }, ["jev"], false);
+  assert.deepEqual(denied.names(), [], "a key on disk is not consent to use it");
+  assert.deepEqual(denied.allNames(), [], "and it is not nameable either, so --backend cannot reach it");
+  assert.match(
+    denied.skipped[0]?.reason ?? "",
+    /sends state off this machine/,
+    "the reason is reported rather than the backend disappearing silently"
+  );
+
+  const allowed = chainOf({ jev: { name: "jev", kind: "jev", model: "jev-latest" } }, ["jev"], true);
+  assert.deepEqual(allowed.names(), ["jev"], "the same config with allowCloud answers");
+});
+
 test("a model can be named bare, qualified, or not at all", async () => {
   const fake = await startFakeLaya({
     health: { status: "ok", runtime: "mlx", device: "gpu", loaded: ["english"], checkpoints: ["english", "multilingual"] },

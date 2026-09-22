@@ -21,6 +21,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
+    "check": "npm run typecheck && npm test",
     "status": "node src/cli/main.ts status",
     "mcp": "node src/mcp/server.ts",
     "smoke": "pi -ne -e ./src/harness/pi/index.ts -p --no-session 'List the names of every tool available to you, one per line, and nothing else.'",
