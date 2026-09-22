@@ -607,7 +607,9 @@ test("adecider_find_skill suggests loaded skills, and says so plainly when none 
     const pi = fakePi({
       active: [],
       inactive: [],
-      skills: [{ name: "pdf", description: "Read, split, merge, and OCR PDF documents" }],
+      // pi registers a skill as the command `skill:<name>`; that shape is what made a suggestion
+      // render as `/skill:skill:pdf` until the catalogue normalized the id.
+      skills: [{ name: "skill:pdf", description: "Read, split, merge, and OCR PDF documents" }],
     });
     registerAdapterTools(pi.api, () => chainFor(fake));
     const findSkill = pi.registered.get("adecider_find_skill");
@@ -615,7 +617,8 @@ test("adecider_find_skill suggests loaded skills, and says so plainly when none 
 
     const suggested = await findSkill.execute("call-1", { query: "split a PDF into pages" });
     assert.match(suggested.content[0]?.text ?? "", /Matching skills/);
-    assert.match(suggested.content[0]?.text ?? "", /\/skill:pdf/);
+    assert.match(suggested.content[0]?.text ?? "", /\/skill:pdf \(P=/);
+    assert.doesNotMatch(suggested.content[0]?.text ?? "", /\/skill:skill:/, "the prefix is not doubled");
 
     const bare = fakePi({ active: [], inactive: [] });
     registerAdapterTools(bare.api, () => chainFor(fake));
@@ -627,7 +630,7 @@ test("adecider_find_skill suggests loaded skills, and says so plainly when none 
 });
 
 test("skills come from the command context when it lists them, and from commands when it cannot", () => {
-  const pi = fakePi({ active: [], inactive: [], skills: [{ name: "pdf", description: "Read and split PDFs" }] });
+  const pi = fakePi({ active: [], inactive: [], skills: [{ name: "skill:pdf", description: "Read and split PDFs" }] });
 
   // The command context is authoritative and carries locations, but a malformed entry is skipped
   // rather than offered with an empty description.
@@ -640,11 +643,15 @@ test("skills come from the command context when it lists them, and from commands
     }),
   };
   const fromOptions = skillCatalog(pi.api, withOptions as never);
-  assert.deepEqual(fromOptions.map((entry) => entry.id), ["pdf"]);
+  assert.deepEqual(fromOptions.map((entry) => entry.id), ["pdf"], "an id is the skill's name, not its command");
   assert.equal(fromOptions[0]?.location, "/skills/pdf/SKILL.md");
 
   const fromCommands = skillCatalog(pi.api);
-  assert.deepEqual(fromCommands.map((entry) => entry.id), ["pdf"], "the command list is the fallback");
+  assert.deepEqual(
+    fromCommands.map((entry) => entry.id),
+    ["pdf"],
+    "the command list is the fallback, and its `skill:` prefix does not survive into the id"
+  );
 
   const broken = {
     getSystemPromptOptions: () => {

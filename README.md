@@ -407,6 +407,13 @@ npm run check          # typecheck then the suite: the one command to run before
 npm run status         # probe the chain
 ```
 
+Both `bin/*.js` shims are executable, so the CLI is one symlink away from being a command:
+
+```console
+ln -sfn "$PWD/bin/adecider.js" ~/.local/bin/adecider
+ln -sfn "$PWD/bin/adecider-gate.js" ~/.local/bin/adecider-gate
+```
+
 `.github/workflows/check.yml` runs `npm run check` on 23.6 and on a current line, with the actions
 pinned to the commit each release tag points at. Nothing in CI needs a model: the live tests skip.
 

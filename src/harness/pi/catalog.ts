@@ -108,6 +108,19 @@ export function inactiveTools(pi: ExtensionAPI, exclude: readonly string[]): Too
  * the fallback. Same two sources pi-jev used, but the returned entries already carry descriptions,
  * which is what the judge needs.
  */
+/**
+ * The skill's own name, without the command prefix.
+ *
+ * pi registers a skill as the command `skill:<name>`, and `getCommands()` reports it in that form,
+ * while `getSystemPromptOptions()` reports the bare name. Both feed this catalogue, so the prefix is
+ * stripped once here: ids stay bare, the two sources dedupe against each other, and every surface
+ * that renders an id can write `/skill:<id>` (measured 2026-09-24: keeping the prefix rendered a
+ * suggestion as `/skill:skill:video-podcast-maker-lite`).
+ */
+function skillId(name: string): string {
+  return name.startsWith("skill:") ? name.slice("skill:".length) : name;
+}
+
 export function skillCatalog(
   pi: ExtensionAPI,
   ctx?: ExtensionContext | ExtensionCommandContext
@@ -127,8 +140,8 @@ export function skillCatalog(
           const name = skill.name;
           const description = skill.description;
           if (typeof name === "string" && typeof description === "string") {
-            found.set(name, {
-              id: name,
+            found.set(skillId(name), {
+              id: skillId(name),
               description,
               ...(typeof skill.location === "string" ? { location: skill.location } : {}),
             });
@@ -141,9 +154,10 @@ export function skillCatalog(
   }
 
   for (const command of pi.getCommands()) {
-    if (command.source !== "skill" || found.has(command.name)) continue;
-    found.set(command.name, {
-      id: command.name,
+    const id = skillId(command.name);
+    if (command.source !== "skill" || found.has(id)) continue;
+    found.set(id, {
+      id,
       description: command.description ?? `Skill ${command.name}`,
       ...(command.sourceInfo?.path ? { location: command.sourceInfo.path } : {}),
     });

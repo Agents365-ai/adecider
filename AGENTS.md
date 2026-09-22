@@ -157,6 +157,9 @@ was written against. So:
 - TypeScript is strict with `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `isolatedModules` and
   `erasableSyntaxOnly`: use `import type` for types, no enums or parameter properties, and index
   `process.env` with brackets.
+- Skill ids are the skill's own name: pi registers the command `skill:<name>` and reports it that way
+  from `getCommands()`, so `skillCatalog()` strips the prefix once. Every surface renders `/skill:<id>`,
+  and a prefix left in the id renders as `/skill:skill:<name>`.
 - Tool names, `/adecider` subcommands, error codes, and `src/harness/pi/rpc.ts` event strings are a
   compatibility surface with pi-jev (`jev_find_tools`, `jev_find_skill`, `jev_evaluate`). Renaming one
   breaks migration checks, so change it only with a reason that survives review.
