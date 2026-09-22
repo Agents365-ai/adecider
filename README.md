@@ -371,6 +371,29 @@ Environment overrides: `ADECIDER_CONFIG` (config path), `ADECIDER_CHAIN` (comma-
 Chain order matters: the first backend that passes a health probe takes the call. Probe results are
 cached for 5 seconds.
 
+### Behind a proxy
+
+Node's `fetch` ignores `HTTP_PROXY` and `HTTPS_PROXY` unless they are opted into: set
+`NODE_USE_ENV_PROXY=1` (or pass `--use-env-proxy`), which exists from Node 24.5.0, and every request
+uses them. Measured 2026-09-24 on a machine whose egress route dropped Node's connection to
+`api.typesafe.ai` while `curl` and Node's own `https` module reached the same host: without the opt-in
+a judgment failed as `unreachable: ... fetch failed`, and with
+`NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://127.0.0.1:7897` the same judgment answered in 2.0 s.
+
+Two things this makes worth knowing. `adecider status` reports `jev` from its configuration rather than
+from a live probe, because a probe would spend a billed request on every status call, so `ok` there
+does not mean the API is reachable. And a transport failure now names its cause when Node reports one
+(`fetch failed (UND_ERR_CONNECT_TIMEOUT)`), which is the difference between a wrong URL and a blocked
+route.
+
+### The Jev endpoint is allowlisted
+
+`jev` is the one backend that attaches a bearer key to every request, so its endpoint may be the
+vendor host (`api.typesafe.ai`) or loopback (a stand-in for tests) and nothing else: a `baseUrl`
+pointing anywhere else is refused when the backend is built, naming the host it would have sent the
+key to. Every endpoint this layer calls is also checked for an http(s) scheme. Hosts are otherwise
+the operator's own declaration, which is why the `openai` backend still takes any URL it is given.
+
 ## Development
 
 Node 23.6 or newer. That is the first release that runs the source as TypeScript with no flag (its

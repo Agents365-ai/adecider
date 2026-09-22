@@ -20,7 +20,7 @@ import type { SystemOneConfig } from "../config.ts";
 import { createJevBackend } from "./jev.ts";
 import { createLayaBackend } from "./laya.ts";
 import { createOpenAiBackend } from "./openai.ts";
-import type { Backend, BackendSpec, Health } from "./types.ts";
+import { assertHttpEndpoint, type Backend, type BackendSpec, type Health } from "./types.ts";
 
 export type { Backend, BackendSpec, Health } from "./types.ts";
 
@@ -32,6 +32,7 @@ export interface SkippedBackend {
 }
 
 function build(spec: BackendSpec): Backend {
+  if (spec.baseUrl !== undefined) assertHttpEndpoint(spec.baseUrl, spec.name);
   if (spec.kind === "laya") return createLayaBackend(spec);
   if (spec.kind === "jev") return createJevBackend(spec);
   return createOpenAiBackend(spec);

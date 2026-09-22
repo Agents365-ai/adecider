@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+
+# Third-party checkouts and material kept beside the source, never part of this repo.
+external/

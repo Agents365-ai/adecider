@@ -14,6 +14,7 @@ import { SystemOneError } from "../errors.ts";
 import { normalizeFamilyResponse } from "../normalize.ts";
 import {
   DEFAULT_TIMEOUT_MS,
+  describeFetchFailure,
   isRetryableStatus,
   requestSignal,
   statusErrorCode,
@@ -24,6 +25,43 @@ import {
 
 export const DEFAULT_JEV_MODEL = "jev-latest";
 const DEFAULT_BASE_URL = "https://api.typesafe.ai/v1/systemone";
+
+/** Hosts this adapter will attach its bearer key to. */
+const ALLOWED_HOSTS = new Set(["api.typesafe.ai", "127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/**
+ * The Jev endpoint, allowlisted.
+ *
+ * This is the only adapter that puts a bearer key on every request, so an endpoint it does not expect
+ * would be a place the key goes. The vendor host and loopback are the two that have a reason to
+ * exist (the API, and a stand-in for tests); anything else is refused by name rather than called,
+ * which turns a mistyped host into an error instead of a silent key egress. The scheme is checked
+ * separately when the backend is built.
+ */
+function jevEndpoint(raw: string | undefined, backend: string): string {
+  const url = raw ?? DEFAULT_BASE_URL;
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    // Through a chain or `createBackend` the scheme was already checked by `assertHttpEndpoint`, so
+    // this is the second line of defense: it is what a caller that imports this factory directly gets.
+    throw new SystemOneError(
+      "unconfigured",
+      `backend ${JSON.stringify(backend)} has an endpoint that is not a URL: ${JSON.stringify(url)}`,
+      backend
+    );
+  }
+  if (!ALLOWED_HOSTS.has(hostname)) {
+    throw new SystemOneError(
+      "unconfigured",
+      `backend ${JSON.stringify(backend)} would send its API key to ${JSON.stringify(hostname)}; ` +
+        `the allowed hosts are api.typesafe.ai and loopback`,
+      backend
+    );
+  }
+  return url;
+}
 
 /**
  * Jev's `noul` variant reads `criteria` as an object, while this layer's public type carries a
@@ -79,7 +117,7 @@ export function resolveJevApiKey(explicit?: string): { key: string; origin: stri
 
 export function createJevBackend(spec: BackendSpec): Backend {
   const name = spec.name;
-  const url = spec.baseUrl ?? DEFAULT_BASE_URL;
+  const url = jevEndpoint(spec.baseUrl, name);
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   async function send(
@@ -89,6 +127,11 @@ export function createJevBackend(spec: BackendSpec): Backend {
     timeout: number,
     abort?: AbortSignal
   ): Promise<Response> {
+    // The sink rule (ts-ssrf) matches this call's syntax, not its data flow: every value that reaches
+    // here was host-allowlisted to the vendor API or loopback by jevEndpoint() and scheme-checked by
+    // assertHttpEndpoint() when the backend was built, and no URL ever comes from the state, a
+    // question, or model output.
+    // pi-lens-ignore: ts-ssrf
     return fetch(target, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
@@ -160,7 +203,7 @@ export function createJevBackend(spec: BackendSpec): Backend {
       } catch (error) {
         throw new SystemOneError(
           error instanceof Error && error.name === "TimeoutError" ? "timeout" : "unreachable",
-          `${name} call failed: ${error instanceof Error ? error.message : String(error)}`,
+          `${name} call failed: ${describeFetchFailure(error)}`,
           name
         );
       }

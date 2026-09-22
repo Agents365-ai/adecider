@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { judge } from "../src/judge.ts";
 import { isSystemOneError } from "../src/errors.ts";
 import { BackendChain } from "../src/backends/index.ts";
+import { createJevBackend } from "../src/backends/jev.ts";
 import type { SystemOneConfig } from "../src/config.ts";
 import { startFakeLaya, type FakeLaya } from "./helpers/fake-laya.ts";
 
@@ -245,6 +246,54 @@ test("a stalled call is a timeout and a refused connection is unreachable", asyn
     (error: unknown) => {
       assert.ok(isSystemOneError(error));
       assert.equal(error.code, "unreachable");
+      return true;
+    }
+  );
+});
+
+test("the key only goes to the vendor API or loopback, checked before any call", () => {
+  const build = (baseUrl: string) =>
+    BackendChain.fromConfig({
+      chain: ["jev"],
+      backends: { jev: { name: "jev", kind: "jev", baseUrl, apiKey: KEY, model: "jev-latest" } },
+      allowCloud: true,
+      configPath: "<test>",
+    });
+
+  assert.throws(
+    () => build("https://typesafe-lookalike.example.com/v1/systemone"),
+    (error: unknown) => {
+      assert.ok(isSystemOneError(error));
+      assert.equal(error.code, "unconfigured");
+      assert.match(error.message, /would send its API key to "typesafe-lookalike\.example\.com"/);
+      assert.match(error.message, /allowed hosts are api\.typesafe\.ai and loopback/);
+      return true;
+    },
+    "a host that is not the vendor API is refused, not called with the key attached"
+  );
+
+  // The endpoints that have a reason to exist still build: a stand-in on loopback, and the default.
+  assert.ok(build("http://127.0.0.1:8319/decide").get("jev"));
+  assert.ok(build("http://localhost:8319/decide").get("jev"));
+  assert.ok(
+    BackendChain.fromConfig({
+      chain: ["jev"],
+      backends: { jev: { name: "jev", kind: "jev", apiKey: KEY, model: "jev-latest" } },
+      allowCloud: true,
+      configPath: "<test>",
+    }).get("jev"),
+    "the built-in vendor endpoint is the default and needs no declaration"
+  );
+});
+
+test("a factory imported directly refuses an endpoint it cannot even parse", () => {
+  // Every path through a chain checks the scheme first, so this covers the adapter's own guard.
+  assert.throws(
+    () => createJevBackend({ name: "jev", kind: "jev", baseUrl: "not a url at all", apiKey: KEY }),
+    (error: unknown) => {
+      assert.ok(isSystemOneError(error));
+      assert.equal(error.code, "unconfigured");
+      assert.match(error.message, /has an endpoint that is not a URL/);
       return true;
     }
   );

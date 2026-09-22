@@ -14,6 +14,7 @@ import { SystemOneError } from "../src/errors.ts";
 import { judge } from "../src/judge.ts";
 import { serve } from "../src/server/http.ts";
 import type { SystemOneConfig } from "../src/config.ts";
+import { isSystemOneError } from "../src/errors.ts";
 import { startFakeLaya, type FakeLaya } from "./helpers/fake-laya.ts";
 
 function chainOf(backends: SystemOneConfig["backends"], chain: string[], allowCloud = false): BackendChain {
@@ -280,4 +281,31 @@ test("a backend outage is a 502 with a code, not a generic failure", async () =>
   } finally {
     await running.close();
   }
+});
+
+test("an endpoint that is not an http URL is refused when the backend is built", () => {
+  assert.throws(
+    () => chainOf({ odd: { name: "odd", kind: "laya", baseUrl: "htp://127.0.0.1:8317" } }, ["odd"]),
+    (error: unknown) => {
+      assert.ok(isSystemOneError(error));
+      assert.equal(error.code, "unconfigured");
+      assert.match(error.message, /endpoint must be http or https, found "htp:"/);
+      return true;
+    },
+    "a scheme typo fails where it can be explained, not as an opaque fetch failure later"
+  );
+
+  assert.throws(
+    () => chainOf({ odd: { name: "odd", kind: "openai", baseUrl: "file:///etc/passwd", model: "m" } }, ["odd"]),
+    (error: unknown) => isSystemOneError(error) && /must be http or https/.test(error.message)
+  );
+
+  assert.throws(
+    () => chainOf({ odd: { name: "odd", kind: "laya", baseUrl: "127.0.0.1:8317" } }, ["odd"]),
+    (error: unknown) => isSystemOneError(error) && /not a URL/.test(error.message)
+  );
+
+  // A normal endpoint and a built-in default are unaffected.
+  assert.ok(chainOf({ ok: { name: "ok", kind: "laya", baseUrl: "http://127.0.0.1:8317" } }, ["ok"]).get("ok"));
+  assert.ok(chainOf({ jev: { name: "jev", kind: "jev", model: "jev-latest" } }, ["jev"], true).get("jev"));
 });

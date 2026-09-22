@@ -14,6 +14,7 @@ import type { Answer, Question, QuestionType, SystemOneRequest, SystemOneRespons
 import { SystemOneError } from "../errors.ts";
 import {
   DEFAULT_TIMEOUT_MS,
+  describeFetchFailure,
   isLocalUrl,
   requestSignal,
   statusErrorCode,
@@ -53,17 +54,28 @@ function buildPrompt(state: unknown, questions: Record<string, Question>): strin
   return lines.join("\n");
 }
 
-/** Pull the first JSON object out of a reply that may contain fences or prose. */
-function extractJson(text: string): unknown {
+/** A chat reply read as JSON, or why it could not be read. */
+type ExtractedJson = { ok: true; value: Record<string, unknown> } | { ok: false; reason: string };
+
+/**
+ * Pull the first JSON object out of a reply that may contain fences or prose.
+ *
+ * The slice runs from the first `{` to the last `}`, so anything that parses at all parses to an
+ * object: the return type says object, not "some JSON value", and the caller has no unreachable
+ * shape to check for. A reply this cannot read is reported, never guessed at.
+ */
+function extractJson(text: string): ExtractedJson {
   const trimmed = text.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
   const candidate = fenced?.[1]?.trim() ?? trimmed;
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
-  if (start === -1 || end <= start) {
-    throw new Error("no JSON object in the reply");
+  if (start === -1 || end <= start) return { ok: false, reason: "no JSON object in the reply" };
+  try {
+    return { ok: true, value: JSON.parse(candidate.slice(start, end + 1)) as Record<string, unknown> };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
-  return JSON.parse(candidate.slice(start, end + 1));
 }
 
 function numberMap(value: unknown): Record<string, number> | undefined {
@@ -174,7 +186,7 @@ export function createOpenAiBackend(spec: BackendSpec): Backend {
     } catch (error) {
       throw new SystemOneError(
         error instanceof Error && error.name === "TimeoutError" ? "timeout" : "unreachable",
-        `${name} call failed: ${error instanceof Error ? error.message : String(error)}`,
+        `${name} call failed: ${describeFetchFailure(error)}`,
         name
       );
     }
@@ -263,19 +275,15 @@ export function createOpenAiBackend(spec: BackendSpec): Backend {
         throw new SystemOneError("bad_response", `${name} returned an empty completion`, name);
       }
 
-      let parsed: unknown;
-      try {
-        parsed = extractJson(content);
-      } catch (error) {
+      const extracted = extractJson(content);
+      if (!extracted.ok) {
         throw new SystemOneError(
           "bad_response",
-          `${name} reply was not JSON: ${error instanceof Error ? error.message : String(error)}; first 200 characters: ${content.slice(0, 200)}`,
+          `${name} reply was not JSON: ${extracted.reason}; first 200 characters: ${content.slice(0, 200)}`,
           name
         );
       }
-      if (!isRecord(parsed)) {
-        throw new SystemOneError("bad_response", `${name} reply JSON is not an object`, name);
-      }
+      const parsed = extracted.value;
 
       const outcome: SystemOneResponse = {
         answers: normalizeCompletionAnswers(name, parsed["answers"], request.questions),

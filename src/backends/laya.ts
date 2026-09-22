@@ -12,6 +12,7 @@ import { SystemOneError } from "../errors.ts";
 import { normalizeFamilyResponse } from "../normalize.ts";
 import {
   DEFAULT_TIMEOUT_MS,
+  describeFetchFailure,
   requestSignal,
   statusErrorCode,
   type Backend,
@@ -95,7 +96,7 @@ export function createLayaBackend(spec: BackendSpec): Backend {
       } catch (error) {
         throw new SystemOneError(
           error instanceof Error && error.name === "TimeoutError" ? "timeout" : "unreachable",
-          `${name} call failed: ${error instanceof Error ? error.message : String(error)}`,
+          `${name} call failed: ${describeFetchFailure(error)}`,
           name
         );
       }

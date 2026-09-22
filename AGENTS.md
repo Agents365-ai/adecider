@@ -104,6 +104,10 @@ test, do not delete it.
    fail on the dialect of the backend that happens to answer it; `test/jev.test.ts` pins both halves.
 10. **Automatic features are off by default**, matching pi-jev. `/adecider status` reports what is on.
    Auto mode is the only feature that spends a request per prompt.
+11. **The Jev endpoint is allowlisted** to the vendor host or loopback, because it is the one adapter
+   that attaches a bearer key to every request; a `baseUrl` anywhere else is refused by name when the
+   backend is built (`jevEndpoint()`). Hosts stay open for the other adapters, where the endpoint is
+   the operator's declaration and no credential travels with it.
 
 ## Verification culture
 
@@ -172,5 +176,9 @@ was written against. So:
   builder.
 - The HTTP server holds a global lock on the accelerator, so judgements serialize; a burst of parallel
   calls queues rather than failing fast.
+- `jev` health is configuration-only, so `status` reporting it as ok does not mean the API is
+  reachable. When a cloud call reports `fetch failed`, read the cause code before touching the adapter:
+  on a machine whose route drops Node's connections the fix is `NODE_USE_ENV_PROXY=1 HTTPS_PROXY=...`
+  (Node 24.5.0 and newer, measured 2026-09-24). The adapter now reports the cause itself.
 - `npm run smoke` and any live test may be affected by whatever is running on 8317/8318 at that
   moment. Report a skip as a skip.
