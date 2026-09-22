@@ -1,0 +1,37 @@
+name: check
+
+# What a contributor runs locally: `npm run check` is typecheck plus the suite,
+# and the suite is hermetic. The live tests need local model services and skip by
+# design, so CI exercises everything except what needs a model on the machine.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 23.6 is the floor: the first release where Node runs the source as
+        # TypeScript with no flag, which is why this repo has no build step. 26
+        # is the line this is developed on.
+        node: ["23.6", "26"]
+    steps:
+      # Both actions are pinned to the commit each release tag points at,
+      # resolved through the GitHub API, so a moved tag cannot change what runs.
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-node v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check

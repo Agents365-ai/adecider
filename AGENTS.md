@@ -55,14 +55,19 @@ npm run models           # the model catalogue as a caller sees it
 npm run serve            # one HTTP format over every model
 node src/cli/main.ts judge --state-file /tmp/diff.patch --questions @/tmp/q.json --threshold 0.7
 node src/cli/main.ts mcp-config
-node src/cli/gate.ts --state-file /tmp/x --questions @/tmp/q.json   # exit 0 pass, 1 fail, 2 error
+node src/cli/gate.ts -c "the state reports a refund" --state-file /tmp/x   # exit 0 pass, 1 fail, 2 error
 pi -ne -e ./src/harness/pi/index.ts      # load the extension in a dev session
 npm run smoke            # asserts the extension's three tools register in a real pi process
 ```
 
-Node 23 or newer, no build step: Node runs the TypeScript directly, so imports carry `.ts` extensions
-and `bin/*.js` are two-line shims. Zero runtime dependencies; `node_modules` is dev-only (pi packages,
-typebox, typescript). Do not add a runtime dependency, and do not add a bundler.
+`gate` takes `-c <criteria>` and builds its own one-question judgment; it does not take `--questions`,
+which is `adecider judge`'s flag. `.github/workflows/check.yml` runs `npm run check` on Node 23.6 and
+26 and needs no model: the live tests skip.
+
+Node 23.6 or newer, no build step: Node runs the TypeScript directly (23.6 is the release that
+unflagged type stripping), so imports carry `.ts` extensions and `bin/*.js` are two-line shims. Zero
+runtime dependencies; `node_modules` is dev-only (pi packages, typebox, typescript). Do not add a
+runtime dependency, and do not add a bundler.
 
 ## Invariants
 
@@ -148,6 +153,9 @@ was written against. So:
   compatibility surface with pi-jev (`jev_find_tools`, `jev_find_skill`, `jev_evaluate`). Renaming one
   breaks migration checks, so change it only with a reason that survives review.
 - CLI contract: stdout carries JSON only, diagnostics go to stderr, exit `2` for a typed failure.
+- CI actions are pinned to the commit each release tag points at (resolve the tag through the GitHub API
+  rather than copying a SHA from a blog), with `persist-credentials: false` and `permissions: contents:
+  read`. An action is the one dependency here that the lockfile does not name.
 - MCP contract: a failed judgment is a tool result with `isError: true`, not a JSON-RPC error.
 
 ## Known pitfalls

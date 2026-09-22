@@ -373,8 +373,9 @@ cached for 5 seconds.
 
 ## Development
 
-Node 23 or newer, because the source runs as TypeScript with no build step. Zero runtime
-dependencies.
+Node 23.6 or newer. That is the first release that runs the source as TypeScript with no flag (its
+changelog for 2025-01-07, version 23.6.0, is where `--experimental-strip-types` became the default),
+which is why there is no build step. Zero runtime dependencies.
 
 ```console
 npm run typecheck      # tsc --noEmit
@@ -382,6 +383,9 @@ npm test               # hermetic, and prints its own count; the two live ones s
 npm run check          # typecheck then the suite: the one command to run before claiming a change works
 npm run status         # probe the chain
 ```
+
+`.github/workflows/check.yml` runs `npm run check` on 23.6 and on a current line, with the actions
+pinned to the commit each release tag points at. Nothing in CI needs a model: the live tests skip.
 
 Tests cover normalization against payloads measured from the real backends, conformance across the
 three wire dialects on the same numbers, one round trip per judgment whatever the question count, the

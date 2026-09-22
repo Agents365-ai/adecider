@@ -152,7 +152,14 @@ export class AutoModelRouter {
       const scoped = ctx.scopedModels ?? [];
       const available = scoped.length > 0 ? scoped.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
       const now = Date.now();
-      const candidates = available.filter((model) => (this.blocked.get(`${model.provider}/${model.id}`) ?? 0) < now);
+      // A model that cannot take images is not a candidate for an image task. `modelScore` already
+      // ranks it last, but a rank is not an exclusion: with no vision-capable model in the pool the
+      // best of nothing would still be picked, which switches the session onto a text model to answer
+      // a question about a screenshot. Filtering makes the existing `no compatible model` branch reach
+      // it instead.
+      const candidates = available
+        .filter((model) => (this.blocked.get(`${model.provider}/${model.id}`) ?? 0) < now)
+        .filter((model) => !(hasImages && !model.input?.includes("image")));
 
       const target = [...candidates].sort(
         (a, b) => modelScore(b, need.profile, hasImages) - modelScore(a, need.profile, hasImages)
