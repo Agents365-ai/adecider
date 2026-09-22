@@ -12,6 +12,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { judge } from "../src/judge.ts";
 import { isSystemOneError } from "../src/errors.ts";
 import { BackendChain } from "../src/backends/index.ts";
@@ -107,4 +110,142 @@ test("an overloaded API is retried once and reported as busy, not as the caller'
   } finally {
     await fake.close();
   }
+});
+
+/** A server that accepts a request and never answers, so the client's own timeout is what fires. */
+async function startHangingServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  const { createServer } = await import("node:http");
+  const server = createServer(() => {
+    // Deliberately no response: an endpoint that stalls is the case a timeout has to cover.
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  return {
+    url: `http://127.0.0.1:${address.port}/decide`,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+test("the key is found in the spec, the environment, or the secret file, and its absence says so", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const saved = {
+    key: process.env["TYPESAFE_API_KEY"],
+    model: process.env["TYPESAFE_DEFAULT_MODEL"],
+    home: process.env["HOME"],
+  };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "adecider-home-"));
+  const jevAt = (name: string) => {
+    const config: SystemOneConfig = {
+      chain: [name],
+      backends: { [name]: { name, kind: "jev", baseUrl: `${fake.url}/decide` } },
+      allowCloud: true,
+      configPath: "<test>",
+    };
+    return BackendChain.fromConfig(config);
+  };
+
+  try {
+    // The key in the config wins, and is never reported as coming from anywhere else.
+    const explicit = chainFor(fake);
+    assert.match((await explicit.health("jev")).detail, /key from configured/);
+
+    process.env["TYPESAFE_API_KEY"] = "env-key";
+    process.env["TYPESAFE_DEFAULT_MODEL"] = "jev-from-env";
+    delete process.env["HOME"];
+    process.env["HOME"] = home;
+    const fromEnv = jevAt("jev");
+    const envHealth = await fromEnv.health("jev");
+    assert.equal(envHealth.ok, true);
+    assert.match(envHealth.detail, /key from \$TYPESAFE_API_KEY/);
+    assert.deepEqual(envHealth.models, ["jev-from-env"], "a configured default model is reported");
+    assert.equal((await judge({ state: "x", questions: QUESTION }, { chain: fromEnv })).backend, "jev");
+
+    // No environment key: the secret file is next, and then there is nothing.
+    delete process.env["TYPESAFE_API_KEY"];
+    delete process.env["TYPESAFE_DEFAULT_MODEL"];
+    const secret = path.join(home, ".pi", "agent", "secrets", "typesafe_api_key");
+    fs.mkdirSync(path.dirname(secret), { recursive: true });
+    fs.writeFileSync(secret, "file-key\n");
+    const fromFile = jevAt("jev");
+    assert.match((await fromFile.health("jev")).detail, /key from ~\/.pi\/agent\/secrets\/typesafe_api_key/);
+    assert.equal((await judge({ state: "x", questions: QUESTION }, { chain: fromFile })).backend, "jev");
+
+    fs.rmSync(secret);
+    const none = jevAt("jev");
+    const emptyHealth = await none.health("jev");
+    assert.equal(emptyHealth.ok, false);
+    assert.match(emptyHealth.detail, /no API key; set TYPESAFE_API_KEY or write/);
+
+    // Without a name, the health probe is what decides, so the failure is that nothing in the chain
+    // can answer, and the missing key is the reason it reports.
+    await assert.rejects(
+      judge({ state: "x", questions: QUESTION }, { chain: none }),
+      (error: unknown) => {
+        assert.ok(isSystemOneError(error));
+        assert.equal(error.code, "unreachable");
+        assert.match(error.message, /no API key; set TYPESAFE_API_KEY or write/);
+        return true;
+      }
+    );
+
+    // Naming the backend skips the health gate and reaches the adapter, which says what is missing.
+    await assert.rejects(
+      judge({ state: "x", questions: QUESTION, backend: "jev" }, { chain: none }),
+      (error: unknown) => {
+        assert.ok(isSystemOneError(error));
+        assert.equal(error.code, "unconfigured");
+        assert.match(error.message, /add an apiKey for this backend in/);
+        return true;
+      }
+    );
+  } finally {
+    if (saved.key === undefined) delete process.env["TYPESAFE_API_KEY"];
+    else process.env["TYPESAFE_API_KEY"] = saved.key;
+    if (saved.model === undefined) delete process.env["TYPESAFE_DEFAULT_MODEL"];
+    else process.env["TYPESAFE_DEFAULT_MODEL"] = saved.model;
+    process.env["HOME"] = saved.home;
+    fs.rmSync(home, { recursive: true, force: true });
+    await fake.close();
+  }
+});
+
+test("a stalled call is a timeout and a refused connection is unreachable", async () => {
+  const hanging = await startHangingServer();
+  try {
+    const stalled = BackendChain.fromConfig({
+      chain: ["jev"],
+      backends: { jev: { name: "jev", kind: "jev", baseUrl: hanging.url, apiKey: KEY, model: "jev-latest", timeoutMs: 300 } },
+      allowCloud: true,
+      configPath: "<test>",
+    });
+    await assert.rejects(
+      judge({ state: "x", questions: QUESTION }, { chain: stalled }),
+      (error: unknown) => {
+        assert.ok(isSystemOneError(error));
+        assert.equal(error.code, "timeout", "a server that never answers is not the caller's mistake");
+        assert.match(error.message, /jev call failed/);
+        return true;
+      }
+    );
+  } finally {
+    await hanging.close();
+  }
+
+  const refused = BackendChain.fromConfig({
+    chain: ["jev"],
+    backends: { jev: { name: "jev", kind: "jev", baseUrl: "http://127.0.0.1:9/decide", apiKey: KEY, timeoutMs: 1200 } },
+    allowCloud: true,
+    configPath: "<test>",
+  });
+  await assert.rejects(
+    judge({ state: "x", questions: QUESTION }, { chain: refused }),
+    (error: unknown) => {
+      assert.ok(isSystemOneError(error));
+      assert.equal(error.code, "unreachable");
+      return true;
+    }
+  );
 });

@@ -47,6 +47,8 @@ export interface FakeLaya {
   url: string;
   /** Requests seen by /decide, so a test can assert what the adapter sent. */
   decideRequests: Array<Record<string, unknown>>;
+  /** Requests seen by the OpenAI-compatible route, with the headers, for the same reason. */
+  chatRequests: Array<{ headers: Record<string, unknown>; body: Record<string, unknown> }>;
   close(): Promise<void>;
 }
 
@@ -111,11 +113,20 @@ export async function startFakeLaya(options?: {
    * the same numbers as a family payload. Defaults to `{value: echo, probability: echo}` per id.
    */
   chatAnswers?: Record<string, unknown>;
+  /** Message content for the OpenAI-compatible route, verbatim. Defaults to the answers as JSON. */
+  chatContent?: string;
+  /** Response body for the OpenAI-compatible route, verbatim and not JSON. */
+  chatRaw?: string;
+  /** Status for the OpenAI-compatible route, or one per call in order, so a retry is testable. */
+  chatStatus?: number | number[];
+  /** Response body for /decide, verbatim and not JSON. */
+  decideRaw?: string;
   /** Answer every question the request asks, at this probability, instead of a fixed payload. */
   echo?: number;
   onDecide?: (body: Record<string, unknown>) => unknown | undefined;
 }): Promise<FakeLaya> {
   const decideRequests: Array<Record<string, unknown>> = [];
+  const chatRequests: Array<{ headers: Record<string, unknown>; body: Record<string, unknown> }> = [];
 
   const server = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -152,20 +163,38 @@ export async function startFakeLaya(options?: {
           return;
         }
         decideRequests.push(parsed);
+        chatRequests.push({ headers: request.headers as Record<string, unknown>, body: parsed });
         // Recover the question ids from the prompt the adapter built, and answer each of them.
         const messages = Array.isArray(parsed["messages"]) ? (parsed["messages"] as Array<{ content?: string }>) : [];
         const prompt = messages.map((message) => message.content ?? "").join("\n");
         const ids = [...prompt.matchAll(/"([A-Za-z0-9_]+)":\s*\{\s*"type"/g)].map((match) => match[1] as string);
         const answers: Record<string, unknown> = {};
         for (const id of ids) {
-          answers[id] =
-            options?.chatAnswers?.[id] ?? { value: options?.echo ?? 0.9, probability: options?.echo ?? 0.9 };
+          const provided = options?.chatAnswers?.[id];
+          if (provided !== undefined) {
+            answers[id] = provided;
+            continue;
+          }
+          // With an explicit answer map, an id that is missing was skipped by the model, which is a
+          // case worth being able to replay. Without one, every id is echoed.
+          if (options?.chatAnswers !== undefined) continue;
+          answers[id] = { value: options?.echo ?? 0.9, probability: options?.echo ?? 0.9 };
         }
-        response.writeHead(200, { "content-type": "application/json" });
+
+        const status = Array.isArray(options?.chatStatus)
+          ? options.chatStatus[chatRequests.length - 1] ?? 200
+          : options?.chatStatus ?? 200;
+        if (options?.chatRaw !== undefined) {
+          response.writeHead(status, { "content-type": "text/plain" });
+          response.end(options.chatRaw);
+          return;
+        }
+        const content = options?.chatContent !== undefined ? options.chatContent : JSON.stringify({ answers });
+        response.writeHead(status, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
             model: options?.openaiModel ?? "fake-chat-model",
-            choices: [{ message: { content: JSON.stringify({ answers }) }, finish_reason: "stop" }],
+            choices: [{ message: { content }, finish_reason: "stop" }],
             usage: { prompt_tokens: 100, completion_tokens: 20 },
           })
         );
@@ -187,6 +216,12 @@ export async function startFakeLaya(options?: {
         if (override !== undefined) {
           response.writeHead(options?.status ?? 200, { "content-type": "application/json" });
           response.end(JSON.stringify(override));
+          return;
+        }
+
+        if (options?.decideRaw !== undefined) {
+          response.writeHead(options?.status ?? 200, { "content-type": "text/plain" });
+          response.end(options.decideRaw);
           return;
         }
 
@@ -216,6 +251,7 @@ export async function startFakeLaya(options?: {
   return {
     url: `http://127.0.0.1:${port}`,
     decideRequests,
+    chatRequests,
     async close() {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve()))

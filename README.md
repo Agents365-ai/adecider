@@ -389,10 +389,11 @@ pinned to the commit each release tag points at. Nothing in CI needs a model: th
 
 Tests cover normalization against payloads measured from the real backends, conformance across the
 three wire dialects on the same numbers, one round trip per judgment whatever the question count, the
-decision rules, the Jev wire contract against a local stand-in, the CLI entry points as a process
-(exit codes, stdout contract), the three pi tools through a fake pi API, and the full MCP surface by
-spawning the server and speaking JSON-RPC to it. The live tests assert the calibration margin, agree
-between two running services when both are up, and skip rather than fail when nothing is listening.
+decision rules, each transport's failure modes against a local stand-in, configuration resolution and
+its environment overrides, the CLI entry points as a process (exit codes, stdout contract), the three
+pi tools and the other pi-only paths through a fake pi API, and the full MCP surface by spawning the
+server and speaking JSON-RPC to it. The live tests assert the calibration margin, agree between two
+running services when both are up, and skip rather than fail when nothing is listening.
 `ADECIDER_LIVE_URLS=name=url,...` points them at services on other ports, including at stand-ins.
 
 ## Limits

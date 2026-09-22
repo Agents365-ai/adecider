@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, scoreOf } from "../src/policy.ts";
-import { SystemOneError } from "../src/errors.ts";
+import { decide, scoreOf, soleDecision } from "../src/policy.ts";
+import { SystemOneError, isSystemOneError } from "../src/errors.ts";
 import type { SystemOneResponse } from "../src/types.ts";
 import { normalizeFamilyResponse } from "../src/normalize.ts";
 import { CANNED_PAYLOAD } from "./helpers/fake-laya.ts";
@@ -97,5 +97,31 @@ test("a decision rule is mandatory", () => {
   assert.throws(
     () => decide(response, { calibration: "absolute" }),
     (error: unknown) => error instanceof SystemOneError && error.code === "bad_request"
+  );
+});
+
+test("an answer with nothing to score is refused rather than given a number", () => {
+  assert.throws(
+    () => scoreOf({ id: "pick", type: "choice", value: "billing" }),
+    (error: unknown) => {
+      assert.ok(isSystemOneError(error));
+      assert.equal(error.code, "bad_response");
+      assert.match(error.message, /answer "pick" has neither a distribution nor a confidence/);
+      return true;
+    }
+  );
+});
+
+test("a single-question caller is told which ids were answered instead", () => {
+  const decisions = decide(response, { calibration: "absolute", threshold: 0.5 });
+  assert.equal(soleDecision(decisions, "department").id, "department");
+  assert.throws(
+    () => soleDecision(decisions, "typo"),
+    (error: unknown) => {
+      assert.ok(isSystemOneError(error));
+      assert.equal(error.code, "bad_request");
+      assert.match(error.message, /no answer for question "typo"; answered ids were department, urgency, churn_risk/);
+      return true;
+    }
   );
 });

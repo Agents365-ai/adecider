@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { shortlist } from "../src/harness/pi/catalog.ts";
+import { shortlist, skillCatalog } from "../src/harness/pi/catalog.ts";
 import { selectCandidates, verdictFrom, type ScoreResult } from "../src/harness/pi/decisions.ts";
 import { classifyModelError, classifyModelNeed } from "../src/harness/pi/model-router.ts";
 import { buildWorkflowScript, classifyTopologyFallback } from "../src/harness/pi/orchestrator.ts";
@@ -624,4 +624,36 @@ test("adecider_find_skill suggests loaded skills, and says so plainly when none 
   } finally {
     await fake.close();
   }
+});
+
+test("skills come from the command context when it lists them, and from commands when it cannot", () => {
+  const pi = fakePi({ active: [], inactive: [], skills: [{ name: "pdf", description: "Read and split PDFs" }] });
+
+  // The command context is authoritative and carries locations, but a malformed entry is skipped
+  // rather than offered with an empty description.
+  const withOptions = {
+    getSystemPromptOptions: () => ({
+      skills: [
+        { name: "pdf", description: "Read and split PDFs", location: "/skills/pdf/SKILL.md" },
+        { name: "nameless" },
+      ],
+    }),
+  };
+  const fromOptions = skillCatalog(pi.api, withOptions as never);
+  assert.deepEqual(fromOptions.map((entry) => entry.id), ["pdf"]);
+  assert.equal(fromOptions[0]?.location, "/skills/pdf/SKILL.md");
+
+  const fromCommands = skillCatalog(pi.api);
+  assert.deepEqual(fromCommands.map((entry) => entry.id), ["pdf"], "the command list is the fallback");
+
+  const broken = {
+    getSystemPromptOptions: () => {
+      throw new Error("no command context");
+    },
+  };
+  assert.deepEqual(
+    skillCatalog(pi.api, broken as never).map((entry) => entry.id),
+    ["pdf"],
+    "a context that throws falls back instead of failing the feature"
+  );
 });

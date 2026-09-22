@@ -20,6 +20,8 @@ import { RPC_REQUEST, RPC_REPLY_PREFIX, RPC_TIMEOUT_MS, rpcCall, type RpcReply }
 import { Orchestrator, buildWorkflowScript, determineTopology } from "../src/harness/pi/orchestrator.ts";
 import { AutoModelRouter } from "../src/harness/pi/model-router.ts";
 import { designEvaluation } from "../src/harness/pi/designer.ts";
+import { ToolGuard } from "../src/harness/pi/tool-guard.ts";
+import { Compactor } from "../src/harness/pi/compact.ts";
 import { BackendChain } from "../src/backends/index.ts";
 import type { SystemOneConfig } from "../src/config.ts";
 import { startFakeLaya } from "./helpers/fake-laya.ts";
@@ -50,21 +52,50 @@ class FakeBus {
 
 type FakeMessage = { customType?: string; content?: string };
 
+/** The `pi.on` half: handlers take several arguments, and what they return is what pi acts on. */
+class FakeHooks {
+  private handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
+
+  on(event: string, handler: (...args: unknown[]) => unknown): () => void {
+    const list = this.handlers.get(event) ?? [];
+    list.push(handler);
+    this.handlers.set(event, list);
+    return () => {
+      const index = list.indexOf(handler);
+      if (index >= 0) list.splice(index, 1);
+    };
+  }
+
+  /** Await every handler the way pi does, and hand back what each one returned. */
+  async emit(event: string, ...args: unknown[]): Promise<unknown[]> {
+    const results: unknown[] = [];
+    for (const handler of [...(this.handlers.get(event) ?? [])]) results.push(await handler(...args));
+    return results;
+  }
+
+  count(event: string): number {
+    return (this.handlers.get(event) ?? []).length;
+  }
+}
+
 function fakeApi(options: { setModel?: (model: unknown) => boolean | Promise<boolean> } = {}): {
   api: ExtensionAPI;
   bus: FakeBus;
+  hooks: FakeHooks;
   messages: FakeMessage[];
 } {
   const bus = new FakeBus();
+  const hooks = new FakeHooks();
   const messages: FakeMessage[] = [];
   const api = {
+    on: hooks.on.bind(hooks),
     events: { on: bus.on.bind(bus), emit: bus.emit.bind(bus) },
     sendMessage: (message: FakeMessage) => {
       messages.push(message);
     },
     setModel: options.setModel ?? (() => true),
   };
-  return { api: api as unknown as ExtensionAPI, bus, messages };
+  return { api: api as unknown as ExtensionAPI, bus, hooks, messages };
 }
 
 interface PendingRequest {
@@ -120,9 +151,11 @@ interface FakeCtxOptions {
 function fakeCtx(options: FakeCtxOptions = {}): {
   ctx: ExtensionCommandContext;
   notes: string[];
+  statuses: string[];
   completions: Array<{ model: unknown; request: { systemPrompt?: string; messages?: unknown[] } }>;
 } {
   const notes: string[] = [];
+  const statuses: string[] = [];
   const completions: Array<{ model: unknown; request: { systemPrompt?: string; messages?: unknown[] } }> = [];
   const ctx = {
     model: options.model,
@@ -132,6 +165,10 @@ function fakeCtx(options: FakeCtxOptions = {}): {
     ui: {
       notify: (message: string, level?: string) => {
         notes.push(`${level ?? "info"}: ${message}`);
+      },
+      // The text verbatim: the guard's own messages already carry the key as their prefix.
+      setStatus: (_key: string, text: string) => {
+        statuses.push(text);
       },
     },
     modelRegistry: {
@@ -143,7 +180,7 @@ function fakeCtx(options: FakeCtxOptions = {}): {
       },
     },
   };
-  return { ctx: ctx as unknown as ExtensionCommandContext, notes, completions };
+  return { ctx: ctx as unknown as ExtensionCommandContext, notes, statuses, completions };
 }
 
 test("a request goes out with the protocol a pi-jev runner expects, and is answered", async () => {
@@ -467,5 +504,256 @@ test("a backend decides the topology when one is available, and a bad answer fal
     assert.deepEqual(fellBack, { topology: "review", decidedBy: "local" });
   } finally {
     await wrong.close();
+  }
+});
+
+/** A chain over the fake service, in either dialect. */
+function chainFor(baseUrl: string, kind: "laya" | "openai" = "laya"): BackendChain {
+  const spec = kind === "openai" ? { name: "fake", kind, baseUrl, model: "fake-chat-model" } : { name: "fake", kind, baseUrl };
+  const config: SystemOneConfig = {
+    chain: ["fake"],
+    backends: { fake: spec as SystemOneConfig["backends"][string] },
+    allowCloud: false,
+    configPath: "<test>",
+  };
+  return BackendChain.fromConfig(config);
+}
+
+test("the guard installs on both tool events and does nothing while it is off", async () => {
+  const { api, hooks } = fakeApi();
+  const guard = new ToolGuard(api, () => null, false);
+  guard.install();
+
+  assert.equal(hooks.count("tool_call"), 1, "one handler, so a migration cannot double-guard");
+  assert.equal(hooks.count("tool_result"), 1);
+
+  const call = await hooks.emit("tool_call", { toolName: "bash", input: { command: "ls" } }, fakeCtx().ctx);
+  const result = await hooks.emit("tool_result", { toolName: "bash", input: {}, content: [], isError: true }, fakeCtx().ctx);
+  assert.deepEqual(call, [undefined], "an off guard allows the call");
+  assert.deepEqual(result, [undefined], "and adds no guidance");
+});
+
+test("the guard never inspects its own tools, and never spends a request on them", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const { api, hooks } = fakeApi();
+  try {
+    const guard = new ToolGuard(api, () => chainFor(fake.url), true);
+    guard.install();
+
+    const results = await hooks.emit(
+      "tool_call",
+      { toolName: "adecider_evaluate", input: { state: "x" } },
+      fakeCtx().ctx
+    );
+    assert.deepEqual(results, [undefined]);
+    assert.equal(fake.decideRequests.length, 0, "guarding the guard would recurse and cost a request");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a calibrated backend above the cutoff blocks the call and says so in the status", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const { api, hooks } = fakeApi();
+  try {
+    const guard = new ToolGuard(api, () => chainFor(fake.url), true);
+    guard.install();
+    const { ctx, statuses } = fakeCtx();
+
+    const [outcome] = await hooks.emit(
+      "tool_call",
+      { toolName: "read", input: { path: "/data7/quantum/wormhole/cache/xyz.txt" } },
+      ctx
+    );
+    const block = outcome as { block: boolean; reason: string };
+    assert.equal(block.block, true);
+    assert.match(block.reason, /Blocked by the adecider tool guard/);
+    assert.match(block.reason, /P=0\.90/);
+    assert.deepEqual(statuses, ["adecider: blocked read"]);
+    assert.equal(fake.decideRequests.length, 1, "one request per guarded call");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a call under the cutoff runs, and an outage fails open", async () => {
+  const plausible = await startFakeLaya({ echo: 0.2 });
+  const { api, hooks } = fakeApi();
+  try {
+    const guard = new ToolGuard(api, () => chainFor(plausible.url), true);
+    guard.install();
+    const { ctx, statuses } = fakeCtx();
+    const [outcome] = await hooks.emit("tool_call", { toolName: "bash", input: { command: "git log" } }, ctx);
+    assert.equal(outcome, undefined, "0.20 is not grounds for blocking");
+    assert.deepEqual(statuses, []);
+  } finally {
+    await plausible.close();
+  }
+
+  // A guard that cannot reach a backend must not stop the work it is meant to protect.
+  const dead: SystemOneConfig = {
+    chain: ["dead"],
+    backends: { dead: { name: "dead", kind: "laya", baseUrl: "http://127.0.0.1:9", timeoutMs: 1200 } },
+    allowCloud: false,
+    configPath: "<test>",
+  };
+  const outage = fakeApi();
+  const guard = new ToolGuard(outage.api, () => BackendChain.fromConfig(dead), true);
+  guard.install();
+  const { ctx, statuses } = fakeCtx();
+  const [outcome] = await outage.hooks.emit("tool_call", { toolName: "bash", input: { command: "ls" } }, ctx);
+  assert.equal(outcome, undefined, "an outage is not a verdict");
+  assert.deepEqual(statuses, [], "and it is not reported as one");
+});
+
+test("an uncalibrated backend never blocks, and says which number it is declining to act on", async () => {
+  const chat = await startFakeLaya({ echo: 0.99 });
+  const { api, hooks } = fakeApi();
+  try {
+    const guard = new ToolGuard(api, () => chainFor(`${chat.url}/v1`, "openai"), true);
+    guard.install();
+    const first = fakeCtx();
+    const second = fakeCtx();
+
+    const [outcome] = await hooks.emit("tool_call", { toolName: "read", input: { path: "/nope/xyz" } }, first.ctx);
+    assert.equal(outcome, undefined, "a self-reported number is not grounds for stopping correct work");
+    assert.deepEqual(first.statuses, ["adecider: guard cannot block (0.99, uncalibrated backend)"]);
+
+    await hooks.emit("tool_call", { toolName: "read", input: { path: "/nope/xyz" } }, second.ctx);
+    assert.deepEqual(second.statuses, [], "a declined block is reported once, not on every call");
+
+    guard.setEnabled(false);
+    guard.setEnabled(true);
+    const afterToggle = fakeCtx();
+    await hooks.emit("tool_call", { toolName: "read", input: { path: "/nope/xyz" } }, afterToggle.ctx);
+    assert.equal(afterToggle.statuses.length, 1, "turning the guard back on reports it again");
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a failed tool call gets guidance only when the failure looks like a fabricated path", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const { api, hooks } = fakeApi();
+  try {
+    const guard = new ToolGuard(api, () => chainFor(fake.url), true);
+    guard.install();
+    const failed = { toolName: "read", input: { path: "/nope" }, content: [{ type: "text", text: "ENOENT" }], isError: true };
+
+    const [guided] = await hooks.emit("tool_result", failed, fakeCtx().ctx);
+    const content = (guided as { content: Array<{ text: string }> }).content;
+    assert.equal(content.length, 2, "the original output is kept and the guidance is appended");
+    assert.equal(content[0]?.text, "ENOENT");
+    assert.match(content[1]?.text ?? "", /\[adecider guidance\]: Path not found/);
+
+    const fine = await hooks.emit("tool_result", { ...failed, isError: false }, fakeCtx().ctx);
+    assert.deepEqual(fine, [undefined], "a successful call is not explained");
+  } finally {
+    await fake.close();
+  }
+
+  // A failure the classifier reads as invalid syntax gets its own guidance, and one it reads as an
+  // ordinary runtime failure gets none: the guard does not comment on everything.
+  const syntax = await startFakeLaya({
+    payload: {
+      model: "laya",
+      answers: {
+        error_category: {
+          type: "choice",
+          choice: "syntax_flag",
+          confidence: 0.9,
+          probabilities: { syntax_flag: 0.9, runtime_other: 0.1 },
+        },
+      },
+    },
+  });
+  const other = await startFakeLaya({
+    payload: {
+      model: "laya",
+      answers: {
+        error_category: {
+          type: "choice",
+          choice: "runtime_other",
+          confidence: 0.9,
+          probabilities: { runtime_other: 0.9 },
+        },
+      },
+    },
+  });
+  const failed = { toolName: "bash", input: { command: "ls --wat" }, content: [{ type: "text", text: "flag" }], isError: true };
+  try {
+    const flagged = fakeApi();
+    const flaggedGuard = new ToolGuard(flagged.api, () => chainFor(syntax.url), true);
+    flaggedGuard.install();
+    const [withSyntax] = await flagged.hooks.emit("tool_result", failed, fakeCtx().ctx);
+    assert.match((withSyntax as { content: Array<{ text: string }> }).content[1]?.text ?? "", /Invalid syntax or flag/);
+
+    const plain = fakeApi();
+    const plainGuard = new ToolGuard(plain.api, () => chainFor(other.url), true);
+    plainGuard.install();
+    const [noComment] = await plain.hooks.emit("tool_result", failed, fakeCtx().ctx);
+    assert.equal(noComment, undefined, "an expected runtime failure is left alone");
+  } finally {
+    await syntax.close();
+    await other.close();
+  }
+});
+
+test("the compactor answers pi's compaction hook, and stays out of the way otherwise", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const { api, hooks } = fakeApi();
+  try {
+    const compactor = new Compactor(() => chainFor(fake.url), true);
+    compactor.install(api);
+    assert.equal(hooks.count("session_before_compact"), 1);
+
+    // Nothing judges a conversation-only history, so pi's own summarizer keeps the job.
+    const quiet = await hooks.emit(
+      "session_before_compact",
+      { branchEntries: [{ type: "message", message: { role: "user", content: "hello" } }], preparation: { firstKeptEntryId: "e1", tokensBefore: 10 } },
+      fakeCtx().ctx
+    );
+    assert.deepEqual(quiet, [undefined], "no summary means no compaction from this layer");
+
+    const { ctx, statuses } = fakeCtx();
+    const [handled] = await hooks.emit(
+      "session_before_compact",
+      {
+        branchEntries: [
+          { type: "message", message: { role: "user", content: "fix the refund path" } },
+          { type: "message", message: { role: "toolResult", toolName: "read", content: "40 lines" } },
+        ],
+        preparation: { firstKeptEntryId: "entry-4", tokensBefore: 1211 },
+      },
+      ctx
+    );
+    const compaction = (handled as { compaction: { summary: string; firstKeptEntryId: string; tokensBefore: number } }).compaction;
+    assert.match(compaction.summary, /fix the refund path/);
+    assert.equal(compaction.firstKeptEntryId, "entry-4", "pi's own boundary is passed through unchanged");
+    assert.equal(compaction.tokensBefore, 1211, "and so is the count it measured");
+    assert.deepEqual(statuses, ["adecider: compact kept 2/2"]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a ranking backend cannot ground a keep/drop decision, so compaction declines", async () => {
+  const chat = await startFakeLaya({ echo: 0.99 });
+  try {
+    const compactor = new Compactor(() => chainFor(`${chat.url}/v1`, "openai"), true);
+    const outcome = await compactor.compact(
+      {
+        branchEntries: [
+          { type: "message", message: { role: "user", content: "fix the refund path" } },
+          { type: "message", message: { role: "toolResult", toolName: "read", content: "40 lines" } },
+        ],
+      },
+      {} as never
+    );
+    assert.equal(outcome.skipped, "uncalibrated");
+    assert.equal(outcome.summary, "", "no summary, so pi compacts with its own model");
+    assert.match(outcome.error ?? "", /calibration/);
+  } finally {
+    await chat.close();
   }
 });

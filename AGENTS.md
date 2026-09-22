@@ -115,10 +115,14 @@ was written against. So:
 - Do not write counts that rot into documentation. `npm test` prints its own count, so point at the
   command; the README's own written count was 29 while the suite ran 59.
 - Hermetic tests use `test/helpers/fake-laya.ts`, which replays a payload measured from `laya-mlx`
-  including the fields Jev does not return. `test/conformance.test.ts` is the anti-drift net: the same
-  numbers delivered in the Laya, Jev, and chat encodings must normalize to the same answers and the
-  same verdicts, and a payload that drifts out of contract must fail as `bad_response` rather than be
-  guessed at.
+  including the fields Jev does not return, and covers both dialects plus the OpenAI-compatible routes.
+  `test/conformance.test.ts` is the anti-drift net: the same numbers delivered in the Laya, Jev, and
+  chat encodings must normalize to the same answers and the same verdicts, and a payload that drifts
+  out of contract must fail as `bad_response` rather than be guessed at.
+- Each transport has its own file for its failure modes (`test/laya.test.ts`, `test/jev.test.ts`,
+  `test/openai.test.ts`); add a case there rather than a new file when a branch is missing. The pi-only
+  paths live in `test/harness-wiring.test.ts` behind a fake event bus, model registry, and completion
+  function, so a feature that acts on pi's state stays testable without a session.
 - Wall-clock latency is a measurement, not a contract: keep the numbers in `README.md` and never assert
   a duration in a test on a shared machine. What a latency regression actually was is an adapter that
   fans one judgment out into one request per question, so that is what is asserted (a fixed round-trip
@@ -130,12 +134,12 @@ was written against. So:
   branches are checked without a model.
 - The MCP surface is tested end to end by spawning the server and speaking JSON-RPC to it; a change to
   `decide` needs that path covered, not just the unit. `test/cli.test.ts` does the same for the two
-  CLI entry points (exit codes, stdout contract, `--fail-open`), and `test/jev.test.ts` holds the Jev
-  wire contract against a local stand-in because the real API is billed.
-- pi-adapter behaviour that needs a live session (model switching, event wiring, whether a tool really
-  becomes selectable) is not covered by `npm test`. The three tool handlers and the routing decisions
-  they call are: `test/harness.test.ts` registers them through a fake pi API. For the rest, verify in
-  a real session with `pi -ne -e ./src/harness/pi/index.ts` and check `/adecider status` output rather
+  CLI entry points (exit codes, stdout contract, `--fail-open`).
+- Whether pi itself calls these handlers, and whether a tool the router activates really becomes
+  selectable, needs a live session and is not covered by `npm test`. The logic behind it is: the three
+  tools register through a fake pi API in `test/harness.test.ts`, and the event handlers, model
+  registry, and completion call are driven in `test/harness-wiring.test.ts`. For the rest, verify in a
+  real session with `pi -ne -e ./src/harness/pi/index.ts` and check `/adecider status` output rather
   than trusting the wiring by reading it.
 
 ## Conventions

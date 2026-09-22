@@ -371,3 +371,74 @@ test("mcp-config prints blocks a client can paste, for each client's own config 
     cli.cleanup();
   }
 });
+
+test("models and status print a table a person can read when no JSON was asked for", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const cli = new Cli(localChain(fake.url));
+  try {
+    const models = await cli.run(MAIN, ["models"]);
+    assert.equal(models.code, 0);
+    assert.match(models.stdout, /^MODEL\s+KIND\s+CALIBRATION\s+SCOPE\s+WINDOW\s+AUTO$/m);
+    assert.match(models.stdout, /fake:english\s+laya\s+absolute\s+local\s+512\s+yes/, "the row a human reads");
+    assert.match(models.stdout, /automatic chain: fake/);
+    assert.match(models.stdout, /AUTO=yes means the model answers when no model is named/);
+
+    const status = await cli.run(MAIN, ["status"]);
+    assert.equal(status.code, 0);
+    assert.match(status.stdout, /^BACKEND\s+KIND\s+CALIBRATION\s+SCOPE\s+AUTO\s+HEALTH$/m);
+    assert.match(status.stdout, /fake\s+laya\s+absolute\s+local\s+yes\s+ok/, "a reachable backend is marked ok");
+    assert.match(status.stdout, /cloud allowed: no/);
+    assert.match(status.stdout, new RegExp(`config: ${cli.dir.replace(/[/\\]/g, "\\$&")}/adecider.json`));
+  } finally {
+    cli.cleanup();
+    await fake.close();
+  }
+});
+
+test("an unknown subcommand prints the usage rather than failing silently", async () => {
+  const cli = new Cli(DEAD);
+  try {
+    const result = await cli.run(MAIN, ["frobnicate"]);
+    assert.notEqual(result.code, 0, "an unusable invocation is an error");
+    assert.match(result.stderr + result.stdout, /adecider: typed System One decisions for any agent/);
+  } finally {
+    cli.cleanup();
+  }
+});
+
+test("gate explains itself when asked, and when it cannot judge at all", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const cli = new Cli(localChain(fake.url));
+  try {
+    const help = await cli.run(GATE, ["--help"]);
+    assert.equal(help.code, 0, "asking for usage is not a failure");
+    assert.match(help.stdout, /exit 0 when a judgment passes, 1 when it fails, 2 on error/);
+    assert.match(help.stdout, /-c, --criteria <text>/);
+
+    const bare = await cli.run(GATE, []);
+    assert.equal(bare.code, 2);
+    assert.equal(bare.stdout, "");
+    assert.match(bare.stderr, /missing criteria/);
+    assert.equal(fake.decideRequests.length, 0, "nothing was judged without a criterion");
+  } finally {
+    cli.cleanup();
+    await fake.close();
+  }
+
+  // A backend that answers under an id nobody asked for leaves the gate without a verdict to read.
+  const stray = await startFakeLaya({
+    payload: {
+      model: "laya",
+      answers: { some_other_id: { type: "noul", noul: 0.9, confidence: 0.9 } },
+    },
+  });
+  const strayCli = new Cli(localChain(stray.url));
+  try {
+    const result = await strayCli.run(GATE, [GATE, "-c", "the state reports a refund", "--state", "refunded twice"]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /no gate_passed decision in the result/);
+  } finally {
+    strayCli.cleanup();
+    await stray.close();
+  }
+});
