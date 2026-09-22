@@ -198,7 +198,16 @@ test("gate separates an outage from a verdict: exit 2 by default, exit 0 and lou
 
 test("models --json reports what can be reached, and the chain that answers unnamed requests", async () => {
   const fake = await startFakeLaya({ echo: 0.9 });
-  const cli = new Cli(localChain(fake.url));
+  // `KNOWN_BACKENDS` (laya-mlx, laya, jev) joins every config, so the catalogue also lists whatever
+  // this machine happens to be running. The property under test is that a backend which cannot
+  // answer its probe contributes no row, which this config states by naming one that cannot.
+  const cli = new Cli({
+    ...localChain(fake.url),
+    backends: {
+      fake: { kind: "laya", baseUrl: fake.url },
+      dead: { kind: "laya", baseUrl: "http://127.0.0.1:9", timeoutMs: 800 },
+    },
+  });
   try {
     const result = await cli.run(MAIN, ["models", "--json"]);
     assert.equal(result.code, 0);
@@ -207,11 +216,15 @@ test("models --json reports what can be reached, and the chain that answers unna
       models: Array<{ id: string; backend: string; calibration: string; cloud: boolean; contextTokens: number }>;
     };
     assert.deepEqual(catalogue.automatic_chain, ["fake"]);
-    assert.equal(catalogue.models.length, 1, "a backend that answers no probe contributes no row");
-    assert.equal(catalogue.models[0]?.id, "fake:english");
-    assert.equal(catalogue.models[0]?.calibration, "absolute");
-    assert.equal(catalogue.models[0]?.cloud, false);
-    assert.equal(catalogue.models[0]?.contextTokens, 512, "the window is the answering checkpoint's");
+    assert.ok(
+      !catalogue.models.some((entry) => entry.backend === "dead"),
+      "a backend that answers no probe contributes no row"
+    );
+    const row = catalogue.models.find((entry) => entry.id === "fake:english");
+    assert.ok(row, "the backend that did answer is listed");
+    assert.equal(row.calibration, "absolute");
+    assert.equal(row.cloud, false);
+    assert.equal(row.contextTokens, 512, "the window is the answering checkpoint's");
   } finally {
     cli.cleanup();
     await fake.close();
@@ -293,7 +306,13 @@ test("judge names what is missing instead of guessing at a state", async () => {
 
 test("serve answers every route on a real socket and stops on a signal", async () => {
   const fake = await startFakeLaya({ echo: 0.9 });
-  const cli = new Cli(localChain(fake.url));
+  const cli = new Cli({
+    ...localChain(fake.url),
+    backends: {
+      fake: { kind: "laya", baseUrl: fake.url },
+      dead: { kind: "laya", baseUrl: "http://127.0.0.1:9", timeoutMs: 800 },
+    },
+  });
   const child = spawn(process.execPath, [MAIN, "serve", "--port", "0"], {
     cwd: REPO,
     env: { ...process.env, ADECIDER_CONFIG: path.join(cli.dir, "adecider.json") },
@@ -318,16 +337,26 @@ test("serve answers every route on a real socket and stops on a signal", async (
     const healthBody = (await health.json()) as { backends: Array<{ name: string; ok: boolean }> };
     assert.equal(healthBody.backends.find((backend) => backend.name === "fake")?.ok, true);
 
-    const models = (await (await fetch(`${url}/models`)).json()) as { models: Array<{ id: string }> };
-    assert.deepEqual(models.models.map((entry) => entry.id), ["fake:english"]);
+    const models = (await (await fetch(`${url}/models`)).json()) as { models: Array<{ id: string; backend: string }> };
+    const ids = models.models.map((entry) => entry.id);
+    assert.ok(ids.includes("fake:english"), "the fake backend's checkpoint is listed");
+    assert.ok(
+      !models.models.some((entry) => entry.backend === "dead"),
+      "a backend that answers no probe contributes no row"
+    );
 
+    // A qualified selector names the backend, which is how a caller disambiguates a checkpoint that
+    // more than one backend serves (this machine's own laya-mlx serves "english" as well).
     const route = await fetch(`${url}/route`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "english" }),
+      body: JSON.stringify({ model: "fake:english" }),
     });
     assert.equal(route.status, 200);
-    assert.equal(((await route.json()) as { checkpoint: string }).checkpoint, "english");
+    const routed = (await route.json()) as { checkpoint: string; backend: string; automatic: boolean };
+    assert.equal(routed.checkpoint, "english");
+    assert.equal(routed.backend, "fake");
+    assert.equal(routed.automatic, true, "the configured chain is the one that answers unnamed requests");
 
     const decide = await fetch(`${url}/decide`, {
       method: "POST",

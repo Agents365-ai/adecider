@@ -63,10 +63,13 @@ the PyTorch/MPS reference build, which keeps the same routes and payloads. Both 
 Verified on this machine: `laya-mlx` answered on 8317 as an MLX service under launchd with both
 checkpoints resident; the `openai` adapter answered against a local llama.cpp server when declared in
 the config; and the `jev` adapter answers against the real API with a live key, returning
-`jev-1.13.0`. Note that all four Laya repositories were archived off this machine on 2026-09-21, so the
-Laya defaults now point at nothing here and the live tests skip rather than fail. `adecider models`
-only lists models from backends that answer a health probe, so a stopped service does not invent
-rows.
+`jev-1.13.0`. The four Laya repositories were archived off this machine on 2026-09-21, and the MLX
+deployment was rebuilt on 2026-09-22: the checkout came back from the upstream tarball, the 20 weight
+files passed `verify_checksums.py` against the published metadata, and the service runs under the
+launchd agent `com.niehu.laya-mlx` (`RunAtLoad` plus `KeepAlive`), so it survives the terminal or tmux
+session that started it. The PyTorch/MPS reference build has its package installed but not its
+weights, so 8318 is down. `adecider models` only lists models from backends that answer a health
+probe, so a stopped service does not invent rows.
 
 ### Request windows are small, and over-long requests are truncated silently
 
@@ -226,7 +229,7 @@ Two numbers are reported per answer and they are not the same axis:
 
 | Backend | Metered by | Observed |
 |---|---|---|
-| Laya (local) | nothing; wall time and forward passes | 45 to 72 ms for a 3-question judgment on this machine, 145 to 154 input tokens, `output_tokens` always 0 |
+| Laya (local) | nothing; wall time and forward passes | 19 to 33 ms for a 3-question judgment on this machine (6 runs, 2026-09-22, warm service); 45 to 72 ms on 2026-09-21; 145 to 154 input tokens, `output_tokens` always 0 |
 | Jev | tokens, billed per request | 945 to 1032 ms for a single-question judgment and 1198 ms for three questions; 299 to 322 input and 22 to 70 output tokens |
 | OpenAI-compatible | tokens | 26.2 s for a 2-question judgment, 397 input and 781 output tokens (local 27B over llama.cpp) |
 
@@ -402,7 +405,7 @@ which is why there is no build step. Zero runtime dependencies.
 
 ```console
 npm run typecheck      # tsc --noEmit
-npm test               # hermetic, and prints its own count; the two live ones skip if nothing listens
+npm test               # hermetic, and prints its own count; the live one skips if nothing listens
 npm run check          # typecheck then the suite: the one command to run before claiming a change works
 npm run status         # probe the chain
 ```

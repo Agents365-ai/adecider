@@ -171,8 +171,19 @@ was written against. So:
 
 ## Known pitfalls
 
-- The Laya services default to `127.0.0.1:8317` (MLX, launchd) and `8318` (PyTorch/MPS, on demand).
-  Both are often absent, and absence is normal, not a bug: health failures produce no catalogue rows.
+- The Laya services default to `127.0.0.1:8317` (MLX) and `8318` (PyTorch/MPS reference). Restored
+  2026-09-22: 8317 runs under the launchd agent `com.niehu.laya-mlx` (`RunAtLoad` plus `KeepAlive`, so
+  it outlives the terminal that started it), its weights live in `/Users/niehu/llm/laya-mlx/models/hub`
+  and pass `laya-mlx-local/scripts/verify_checksums.py` against the published metadata, and its venv is
+  `/Users/niehu/llm/laya-mlx/.venv`. The reference build has its package installed but no weights, so
+  8318 is down until `laya-local/fetch_models.sh` finishes (it needs `HF_ENDPOINT=https://hf-mirror.com`
+  on this network). Absence is normal, not a bug: health failures produce no catalogue rows.
+- Both upstream checkouts were gone from this machine, so the restore fetched tarballs through
+  `codeload.github.com` with Node rather than `git`, whose LibreSSL handshakes this network drops.
+- On this machine `/tmp` is wiped periodically and the default tmux socket lives there, so a long job
+  started that way dies with it: keep work and logs under `~/.pi/agent/subagents/...` and give it a
+  socket of its own. The tests must not depend on what is running here: `KNOWN_BACKENDS` joins every
+  config, so a live 8317 changes any assertion over the whole catalogue (see `test/cli.test.ts`).
 - Never probe a down backend in a retry loop. Health results are cached for 5 seconds for this reason.
 - A `noul` question carrying `criteria` is the one place the backends disagree on request shape; see
   invariant 9 before touching `src/types.ts`, `src/judge.ts` validation, or either backend's request
