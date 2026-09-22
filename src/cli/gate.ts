@@ -35,7 +35,8 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const criteria = args.get("criteria") ?? args.positional[0];
+  // `-c` is the documented short form and `--criteria` the long one; both must name the criterion.
+  const criteria = args.get("criteria") ?? args.get("c") ?? args.positional[0];
   if (criteria === undefined || criteria.trim().length === 0) {
     process.stderr.write(`missing criteria\n\n${USAGE}`);
     return 2;

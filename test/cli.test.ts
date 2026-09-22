@@ -157,6 +157,31 @@ test("gate maps a judgment onto 0 pass, 1 fail, and prints the probability eithe
   }
 });
 
+test("the criterion reaches the backend whichever flag carried it", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  const cli = new Cli(localChain(fake.url));
+  const criterion = "the state reports a refund";
+  try {
+    for (const flag of ["-c", "--criteria"]) {
+      const result = await cli.run(GATE, [GATE, flag, criterion, "--state", "refunded twice"]);
+      assert.equal(result.code, 0, `${flag} is a form the usage documents`);
+    }
+    assert.equal(fake.decideRequests.length, 2, "one request per run");
+    for (const request of fake.decideRequests) {
+      const questions = request["questions"] as Record<string, { instructions?: string }> | undefined;
+      const instructions = questions?.["gate_passed"]?.instructions ?? "";
+      assert.ok(
+        instructions.includes(criterion),
+        `the criterion is what gets judged, not the flag that carried it: ${instructions}`
+      );
+      assert.ok(!instructions.includes("\"-c\""), "the flag itself is never the criterion");
+    }
+  } finally {
+    cli.cleanup();
+    await fake.close();
+  }
+});
+
 test("gate --json keeps the verdict and the payload a caller needs, under one id", async () => {
   const fake = await startFakeLaya({ echo: 0.9 });
   const cli = new Cli(localChain(fake.url));

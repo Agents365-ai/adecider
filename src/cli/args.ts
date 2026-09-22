@@ -14,11 +14,16 @@ export function parseArgs(argv: string[], booleanFlags: readonly string[]): Pars
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index] as string;
-    if (!token.startsWith("--")) {
+    // `--flag` and the documented one-letter form `-c` are the same flag. Without this a short flag
+    // fell through to the positional list, so `adecider-gate -c "<criterion>"` judged the literal
+    // `-c` and threw the criterion away: a verdict on a question nobody asked.
+    let body = "";
+    if (token.startsWith("--")) body = token.slice(2);
+    else if (/^-[A-Za-z]$/.test(token)) body = token.slice(1);
+    if (body === "") {
       positional.push(token);
       continue;
     }
-    const body = token.slice(2);
     const equals = body.indexOf("=");
     if (equals !== -1) {
       flags.set(body.slice(0, equals), body.slice(equals + 1));
