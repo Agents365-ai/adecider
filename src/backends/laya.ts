@@ -13,6 +13,7 @@ import { normalizeFamilyResponse } from "../normalize.ts";
 import {
   DEFAULT_TIMEOUT_MS,
   describeFetchFailure,
+  estimateTokens,
   requestSignal,
   statusErrorCode,
   type Backend,
@@ -31,6 +32,8 @@ export function createLayaBackend(spec: BackendSpec): Backend {
   const name = spec.name;
   const baseUrl = (spec.baseUrl ?? "http://127.0.0.1:8317").replace(/\/+$/, "");
   const timeoutMs = spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const windowFor = (model?: string): number =>
+    spec.contextTokens ?? ((model ?? spec.model) === "multilingual" ? 1024 : 512);
 
   return {
     name,
@@ -42,12 +45,9 @@ export function createLayaBackend(spec: BackendSpec): Backend {
     cloud: false,
     // The English checkpoint reads 512 tokens and the multilingual one 1024. An over-long request is
     // truncated by the server, not rejected, so the smaller default is the safe assumption.
-    contextTokens: spec.contextTokens ?? (spec.model === "multilingual" ? 1024 : 512),
+    contextTokens: windowFor(),
 
-    contextTokensFor(model?: string): number {
-      if (spec.contextTokens) return spec.contextTokens;
-      return model === "multilingual" ? 1024 : 512;
-    },
+    contextTokensFor: windowFor,
 
     async health(signal?: AbortSignal): Promise<Health> {
       const url = `${baseUrl}/health`;
@@ -83,6 +83,22 @@ export function createLayaBackend(spec: BackendSpec): Backend {
       const payload: LayaPayload = { state: request.state, questions: request.questions };
       if (request.model) payload.model = request.model;
       if (request.preset) payload.preset = request.preset;
+
+      // The server truncates an over-long request silently and answers on the surviving prefix, so
+      // an over-window request is refused here instead of sent. A typed refusal naming both numbers
+      // beats a confident verdict computed on a prefix, and the estimate deliberately over-counts, so
+      // a borderline request is refused rather than trusted to the server's knife.
+      const window = windowFor(request.model);
+      const estimate = estimateTokens(JSON.stringify(payload));
+      if (estimate > window) {
+        throw new SystemOneError(
+          "bad_request",
+          `${name} reads about ${window} tokens at a time; this request estimates to ${estimate}. ` +
+            "Send a smaller state or fewer or shorter questions, or name the multilingual checkpoint, " +
+            "whose window is twice as wide",
+          name
+        );
+      }
 
       const started = performance.now();
       let response: Response;

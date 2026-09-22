@@ -90,8 +90,10 @@ test, do not delete it.
    `ADECIDER_ALLOW_CLOUD=1` are the only two switches, both off by default. A loopback URL is local.
 6. **Requests are budgeted against the answering backend's window.** The Laya `english` checkpoint
    reads 512 tokens and the server truncates over-long requests silently, so an unbudgeted batched
-   judgment returns confident wrong answers. Dropped candidates must be reported, never dropped in
-   silence.
+   judgment returns confident wrong answers. The harness budgets and reports what it drops; the
+   Laya adapter refuses, as a typed failure, a request whose estimate exceeds the window; and a
+   payload that omits an asked id surfaces in `missing` rather than being absorbed. Dropped
+   candidates must be reported, never dropped in silence.
 7. **`score` and `confidence` are different axes.** `score` is the answer's strength, `confidence` is
    how concentrated the distribution is. Do not conflate them in a new feature.
 8. **One judgment path.** CLI, MCP, HTTP and every pi feature call the same `judge()`; adapter-level

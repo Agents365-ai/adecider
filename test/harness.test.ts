@@ -175,7 +175,7 @@ test("the request is budgeted against the answering backend's window", async () 
     const pi = fakePi({ active: ["read"], inactive: many });
     const config: SystemOneConfig = {
       chain: ["tiny"],
-      backends: { tiny: { name: "tiny", kind: "laya", baseUrl: fake.url, contextTokens: 128 } },
+      backends: { tiny: { name: "tiny", kind: "laya", baseUrl: fake.url, contextTokens: 512 } },
       allowCloud: false,
       configPath: "<test>",
     };
@@ -183,9 +183,37 @@ test("the request is budgeted against the answering backend's window", async () 
 
     assert.ok(outcome.judged < outcome.candidates.length, "a small window must drop candidates");
     assert.ok(outcome.dropped > 0);
-    assert.equal(outcome.contextTokens, 128);
+    assert.equal(outcome.contextTokens, 512);
     const asked = Object.keys((fake.decideRequests[0]?.["questions"] ?? {}) as object);
     assert.equal(asked.length, outcome.judged, "only the budgeted candidates were asked about");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a request that cannot fit the window is declined rather than sent", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    // One clipped candidate question already estimates past a 128-token window, so the adapter
+    // refuses the request and the router declines. Judging one candidate against a request the
+    // server would silently truncate is the failure mode the budget exists to prevent.
+    const many = Array.from({ length: 6 }, (_, index) => ({
+      name: `code_tool_${index}`,
+      description: `Find code definitions and references, variant ${index}, ${"detail ".repeat(20)}`,
+    }));
+    const pi = fakePi({ active: ["read"], inactive: many });
+    const config: SystemOneConfig = {
+      chain: ["tiny"],
+      backends: { tiny: { name: "tiny", kind: "laya", baseUrl: fake.url, contextTokens: 128 } },
+      allowCloud: false,
+      configPath: "<test>",
+    };
+    const outcome = await routeTools(pi.api, BackendChain.fromConfig(config), "find code definitions and references");
+
+    assert.equal(outcome.skipped, "error");
+    assert.equal(outcome.judged, 0);
+    assert.match(outcome.error ?? "", /about 128 tokens/);
+    assert.equal(fake.decideRequests.length, 0, "the over-window request was never sent");
   } finally {
     await fake.close();
   }
@@ -436,11 +464,17 @@ test("tool traffic is recognized in pi's real entry shape", async () => {
     assert.equal(Object.keys(questions).length, 1, "exactly the tool result is judged");
     assert.ok("keep_3" in questions, "the tool result is entry index 3");
 
-    const state = fake.decideRequests[0]?.["state"] as { entries: Array<{ candidate: boolean }> };
+    const state = fake.decideRequests[0]?.["state"] as { entryCount: number; judged: number[] };
+    assert.equal(state.entryCount, 4);
     assert.deepEqual(
-      state.entries.map((entry) => entry.candidate),
-      [false, false, false, true],
+      state.judged,
+      [3],
       "conversation entries are preserved, only tool traffic is judged"
+    );
+    assert.doesNotMatch(
+      JSON.stringify(state),
+      /do the thing|working on it/,
+      "entry text travels in its question, not duplicated in the state"
     );
 
     // Session metadata carries no task information, so it is neither judged nor copied forward. An

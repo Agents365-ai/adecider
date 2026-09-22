@@ -71,16 +71,31 @@ session that started it. The PyTorch/MPS reference build has its package install
 weights, so 8318 is down. `adecider models` only lists models from backends that answer a health
 probe, so a stopped service does not invent rows.
 
-### Request windows are small, and over-long requests are truncated silently
+### Request windows are small, and an over-window request is refused, never truncated
 
-The context window above is load-bearing. Each backend reports it, and every batched judgment is
-budgeted against it. The reason is measured: a nine-candidate tool-routing request serialized to
-**4608 tokens**, and the Laya `english` checkpoint reads **512**. The server truncated the request
-rather than rejecting it, so the answers came back confident and wrong for whatever fell past the
-token limit. The same request with descriptions omitted from the state still measured 1762 tokens.
+The context window above is load-bearing. The reason is measured: a nine-candidate tool-routing
+request serialized to **4608 tokens**, and the Laya `english` checkpoint reads **512**. The server
+truncated the request rather than rejecting it, so the answers came back confident and wrong for
+whatever fell past the token limit. The same request with descriptions omitted from the state still
+measured 1762 tokens.
 
-After budgeting, the same routing request measures **275 tokens** and picks the right tool. What the
-budget costs is coverage: with a 512-token window, three candidates is what fits.
+Three layers keep that from happening again:
+
+- The harness budgets what it batches. Tool routing clips descriptions and asks about as many
+  candidates as fit, reporting the ones it dropped, and the prompt's own cost comes out of the same
+  budget. After budgeting, that routing request measures **275 tokens** and picks the right tool.
+  What the budget costs is coverage: with a 512-token window, three candidates is what fits.
+- Compaction carries each entry's text once, in its question, never duplicated in the state, and
+  budgets its questions the same way. Entries past the budget are kept, not dropped, and the count
+  appears in the summary.
+- The Laya adapter is the backstop for the surfaces with no budget of their own (the CLI, MCP, the
+  HTTP server): it refuses a request whose conservative token estimate exceeds the window, as a
+  typed failure naming the estimate, the window, and the wider `multilingual` checkpoint. The
+  refusal happens before the request is spent.
+
+A backend payload that omits an asked question id is reported in `missing` rather than absorbed:
+the caller sees which ids came back short, and a rule (threshold, top-k) only ever sees the answers
+that actually arrived.
 
 ## What leaves the machine
 
@@ -434,7 +449,8 @@ running services when both are up, and skip rather than fail when nothing is lis
 - Tool routing exists only in the pi extension. See the harness table for why.
 - Requests are budgeted against the answering backend's context window, which for the Laya English
   checkpoint is 512 tokens. A batched judgment therefore covers about three candidates with
-  descriptions, not ten. Dropped candidates are reported rather than silently skipped.
+  descriptions, not ten. Dropped candidates are reported rather than silently skipped, and the
+  compactor keeps, rather than drops, the entries it could not fit in the budget.
 - Tool routing needs a lexical term match to offer any candidate at all. When nothing matches, it
   judges nothing and spends no request, which is deliberate: the yes/no question invites agreement,
   so offering an irrelevant candidate produces a confident false positive. A match on a single

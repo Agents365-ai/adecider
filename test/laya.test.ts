@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { judge, type JudgeOutput } from "../src/judge.ts";
+import { createLayaBackend } from "../src/backends/laya.ts";
 import { isSystemOneError, type SystemOneError } from "../src/errors.ts";
 import { BackendChain } from "../src/backends/index.ts";
 import type { SystemOneConfig } from "../src/config.ts";
@@ -108,6 +109,28 @@ test("a preset is forwarded as the request dialect expects, instead of questions
     assert.equal(sent?.["preset"], "triage");
     assert.ok(sent?.["questions"], "the questions go too, so the caller still controls the ids it reads");
     assert.equal(output.answers["keep"]?.score, 0.9);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a request that cannot fit the window is refused before it is sent", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const backend = createLayaBackend({ name: "laya", kind: "laya", baseUrl: fake.url });
+    await assert.rejects(
+      () => backend.decide({ state: "x".repeat(4000), questions: QUESTION }),
+      (error: unknown) => {
+        assert.ok(isSystemOneError(error), "a typed refusal, not a thrown string");
+        const typed = error as SystemOneError;
+        assert.equal(typed.code, "bad_request");
+        assert.match(typed.message, /about 512 tokens/, "the refusal names the window");
+        assert.match(typed.message, /estimates to /, "and the estimate it measured");
+        assert.match(typed.message, /multilingual/, "and the wider-window way out");
+        return true;
+      }
+    );
+    assert.equal(fake.decideRequests.length, 0, "nothing was sent to a service that would truncate");
   } finally {
     await fake.close();
   }

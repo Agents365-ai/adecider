@@ -37,6 +37,35 @@ function multiChain(main: FakeLaya, reference: FakeLaya): BackendChain {
   );
 }
 
+test("a qualified selector that names an excluded backend says why, not just that it is missing", async () => {
+  const fake = await startFakeLaya({});
+  try {
+    const chain = chainOf(
+      {
+        local: { name: "local", kind: "laya", baseUrl: fake.url },
+        jev: { name: "jev", kind: "jev", model: "jev-latest" },
+      },
+      ["local", "jev"],
+      false
+    );
+    await assert.rejects(
+      () => resolveModel(chain, "jev:jev-latest"),
+      (error: unknown) => {
+        assert.ok(error instanceof SystemOneError);
+        assert.equal(error.code, "unconfigured");
+        assert.match(
+          error.message,
+          /sends state off this machine/,
+          "the privacy reason, not \"no backend named\""
+        );
+        return true;
+      }
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("the catalogue lists every nameable model, with the window its checkpoint actually has", async () => {
   const fake = await startFakeLaya({
     health: { status: "ok", runtime: "mlx", device: "gpu", loaded: ["english"], checkpoints: ["english", "multilingual"] },

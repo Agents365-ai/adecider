@@ -29,7 +29,9 @@ export interface Backend {
    * Load-bearing, not informational. A batched judgment over N candidates is one request, and an
    * over-long request is silently truncated rather than rejected: measured on 2026-09-21, a
    * nine-candidate routing request serialized to 4608 tokens against the Laya `english` checkpoint's
-   * 512-token window, and the answers were computed on the surviving prefix. Callers must budget.
+   * 512-token window, and the answers were computed on the surviving prefix. The harness budgets
+   * what it batches; the Laya adapter refuses a request whose estimate exceeds the window, so the
+   * surfaces with no budget of their own fail loudly instead of truncating.
    */
   readonly contextTokens: number;
   /**
@@ -125,9 +127,18 @@ export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 503 || status === 529 || status >= 500;
 }
 
-/** True for an error code worth one bounded retry. */
-export function isRetryableCode(code: SystemOneErrorCode): boolean {
-  return code === "busy" || code === "unreachable" || code === "timeout";
+/**
+ * Conservative token estimate for a serialized JSON payload.
+ *
+ * Calibrated 2026-09-21 against the Laya `english` checkpoint's 512-token window: a question with a
+ * 160-character description serializes to about 270 characters and costs about 80 tokens, while this
+ * formula predicts 20 + 0.35 * 270 = 115. It over-estimates by roughly 1.4x, which is the direction
+ * that keeps a request inside a window rather than letting the server truncate it. It lives in the
+ * core, not the harness, so the adapter that refuses an over-window request refuses with the same
+ * number the harness budgets with.
+ */
+export function estimateTokens(text: string): number {
+  return 20 + Math.ceil(text.length * 0.35);
 }
 
 export function isLocalUrl(url: string): boolean {

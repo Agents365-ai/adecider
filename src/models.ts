@@ -90,14 +90,10 @@ export async function resolveModel(
   if (colon > 0) {
     const backendName = selector.slice(0, colon);
     const checkpoint = selector.slice(colon + 1);
-    const backend = chain.get(backendName);
-    if (!backend) {
-      throw new SystemOneError(
-        "bad_request",
-        `no backend named ${JSON.stringify(backendName)}; the chain is ${chain.names().join(", ") || "(empty)"}`
-      );
-    }
-    return { backend, checkpoint };
+    // Selecting through the chain keeps the typed reasons honest: a backend that is configured but
+    // excluded for privacy is named as such (select reads `skipped`) instead of being reported as
+    // missing, and an unknown name lists what can be named.
+    return { backend: await chain.select(backendName, signal), checkpoint };
   }
 
   const catalogue = await modelCatalogue(chain, signal);

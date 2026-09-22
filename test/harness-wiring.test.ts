@@ -737,6 +737,33 @@ test("the compactor answers pi's compaction hook, and stays out of the way other
   }
 });
 
+test("compaction budgets its questions against the window and keeps what it cannot ask", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    // Entries whose text cannot all fit the default 512-token window. The first version of the
+    // request carried every text twice, the server truncated it silently, and every keep/drop
+    // verdict came back computed on a prefix.
+    const long = `lorem ipsum ${"detail ".repeat(200)}`;
+    const branchEntries = Array.from({ length: 8 }, (_, index) => ({
+      type: "message",
+      message: { role: "toolResult", toolName: "bash", content: `entry ${index}: ${long}` },
+    }));
+    const compactor = new Compactor(() => chainFor(fake.url), true);
+    const outcome = await compactor.compact({ branchEntries }, {} as never);
+
+    assert.ok((outcome.judged ?? 0) < 8, "the window cannot hold every candidate question");
+    assert.ok((outcome.budgeted ?? 0) > 0, "entries over the budget are counted, not silently dropped");
+    assert.match(outcome.summary, /over the request budget/, "the budget pressure is reported");
+    assert.match(outcome.summary, /\[entry 7\]/, "an un-judged entry is kept rather than dropped");
+
+    const state = fake.decideRequests[0]?.["state"] as { entryCount: number };
+    assert.equal(state.entryCount, 8);
+    assert.doesNotMatch(JSON.stringify(state), /lorem ipsum/, "entry text is not duplicated into the state");
+  } finally {
+    await fake.close();
+  }
+});
+
 test("a ranking backend cannot ground a keep/drop decision, so compaction declines", async () => {
   const chat = await startFakeLaya({ echo: 0.99 });
   try {

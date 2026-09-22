@@ -43,6 +43,35 @@ test("judge sends state and all questions in one call", async () => {
   }
 });
 
+test("a payload that omits an asked id is reported, not absorbed", async () => {
+  const fake = await startFakeLaya({
+    payload: { model: "laya", answers: { first: { type: "noul", noul: 0.8, confidence: 0.8 } } },
+  });
+  try {
+    const output = await judge(
+      {
+        state: "a duplicate charge",
+        questions: {
+          first: { type: "noul", instructions: "Was the customer refunded?" },
+          second: { type: "noul", instructions: "Was the charge duplicated?" },
+        },
+        threshold: 0.5,
+      },
+      { chain: chainFor(fake) }
+    );
+
+    assert.deepEqual(output.missing, ["second"], "the omission is named, not papered over");
+    assert.deepEqual(Object.keys(output.answers), ["first"], "only what was answered is presented");
+    assert.deepEqual(
+      output.decisions?.map((decision) => decision.id),
+      ["first"],
+      "a rule does not turn a subset into the whole set"
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("a threshold produces verdicts and a topK switches to ranking", async () => {
   const fake = await startFakeLaya();
   try {

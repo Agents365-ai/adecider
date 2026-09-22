@@ -47,6 +47,8 @@ export interface JudgeOutput {
   usage: { inputTokens?: number; outputTokens?: number };
   routing?: SystemOneResponse["routing"];
   answers: Record<string, ScoredAnswer>;
+  /** Asked ids the backend did not answer. Present only when the payload omitted some. */
+  missing?: string[];
   /** Present only when a threshold or topK was supplied. */
   decisions?: Decision[];
 }
@@ -213,6 +215,13 @@ export async function judge(
     answers[id] = scoreAnswer(answer);
   }
 
+  // A payload that omits an asked id silently shrinks the caller's question set, and with a rule
+  // the decisions would name that subset as if it were the whole set. Refusing here would break the
+  // one caller that legitimately tolerates omissions: the compactor keeps an unanswered entry rather
+  // than drops it. So the omission is reported, and a caller that needs its one id (the gate, via
+  // soleDecision) refuses on its own behalf.
+  const missing = Object.keys(questions).filter((id) => !(id in response.answers));
+
   const output: JudgeOutput = {
     backend: response.backend,
     calibration: backend.calibration,
@@ -223,6 +232,7 @@ export async function judge(
   if (response.model) output.model = response.model;
   if (response.label) output.label = response.label;
   if (response.routing) output.routing = response.routing;
+  if (missing.length > 0) output.missing = missing;
 
   if (wantsVerdict) {
     output.decisions = decide(response, {

@@ -19,6 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { BackendChain } from "../../backends/index.ts";
 import { inactiveTools, shortlist, type ToolEntry } from "./catalog.ts";
 import { scoreNoul, selectCandidates, type SelectionRule } from "./decisions.ts";
+import { estimateTokens } from "../../backends/types.ts";
 import { BUDGET_FRACTION, budgetQuestions, clip } from "./budget.ts";
 
 /** pi-jev's routing cutoff, kept so a migration does not silently change which tools activate. */
@@ -97,7 +98,13 @@ export async function routeTools(
   try {
     // Select first so the request can be budgeted against the window of whoever will answer.
     const backend = await chain.select(undefined, options?.signal);
-    const budgetTokens = Math.floor(backend.contextTokensFor() * BUDGET_FRACTION);
+    // The prompt is the state, so its cost comes out of the question budget first: the window is
+    // shared, and an un-budgeted long prompt leaves the request over the window even when the
+    // questions fit their own slice.
+    const budgetTokens = Math.max(
+      0,
+      Math.floor(backend.contextTokensFor() * BUDGET_FRACTION) - estimateTokens(prompt)
+    );
 
     const pairs = candidates.map((candidate) => ({
       candidate,

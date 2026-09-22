@@ -13,6 +13,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { BackendChain } from "../../backends/index.ts";
 import { SystemOneError } from "../../errors.ts";
 import { judge } from "../../judge.ts";
+import { BUDGET_FRACTION, budgetQuestions, clip, type BudgetedQuestion } from "./budget.ts";
 
 /** pi-jev's keep cutoff, kept so a migration does not change what survives a compaction. */
 export const COMPACT_KEEP_THRESHOLD = 0.55;
@@ -20,10 +21,17 @@ export const COMPACT_KEEP_THRESHOLD = 0.55;
 /** Entries considered per compaction. Bounds both the question set and the prompt size. */
 export const COMPACT_MAX_ENTRIES = 24;
 
+/** Request-side cap on one entry's text, so a single tool result cannot consume the window by itself. */
+const ENTRY_CHARS = 300;
+
 export interface CompactOutcome {
   summary: string;
   kept: number;
   considered: number;
+  /** Candidates actually judged; the rest were kept because the request budget was full. */
+  judged?: number;
+  /** Candidates never judged because they were over the request budget. */
+  budgeted?: number;
   skipped?: "disabled" | "no-backend" | "empty" | "uncalibrated" | "error";
   error?: string;
 }
@@ -150,32 +158,51 @@ export class Compactor {
 
     const entries: Entry[] = branch.slice(0, COMPACT_MAX_ENTRIES).map((entry, index) => ({
       index,
+      // 2000 characters is the summary-side cap: a kept entry is copied into the summary at this
+      // length. The request-side cap is separate and smaller; see ENTRY_CHARS.
       text: textOf(entry).slice(0, 2000),
       candidate: isCandidate(entry),
       conversational: isConversational(entry),
     }));
 
-    const questions: Record<string, { type: "noul"; instructions: string }> = {};
-    for (const entry of entries) {
-      if (!entry.candidate) continue;
-      questions[`keep_${entry.index}`] = {
-        type: "noul",
-        instructions:
-          "Should this historical entry remain available in the compacted context? Keep it if it holds " +
-          `facts, errors, constraints, file paths, or tool results needed to continue the task. Entry: ${entry.text}`,
-      };
-    }
-
     try {
+      // Select first so the question set is budgeted against the window of whoever will answer. The
+      // first version of this request carried every entry's text twice, once in the state and once
+      // per question, which fit Jev's 8192-token floor and never fit the local checkpoint's 512: on
+      // the default chain every keep/drop verdict was computed on a silently truncated prefix. The
+      // state now carries no entry text at all, and entries past the budget are left to the
+      // unanswered path below, which keeps them: dropping history is irreversible, and a request
+      // that cannot fit is reported rather than sent.
+      const backend = await chain.select(undefined, event.signal);
+      const budgetTokens = Math.floor(backend.contextTokensFor() * BUDGET_FRACTION);
+
+      const pairs: Array<{ entry: Entry; question: BudgetedQuestion }> = [];
+      for (const entry of entries) {
+        if (!entry.candidate) continue;
+        pairs.push({
+          entry,
+          question: {
+            id: `keep_${entry.index}`,
+            instructions:
+              "Should this historical entry remain available in the compacted context? Keep it if it holds " +
+              "facts, errors, constraints, file paths, or tool results needed to continue the task. " +
+              `Entry: ${clip(entry.text, ENTRY_CHARS)}`,
+          },
+        });
+      }
+      const budget = budgetQuestions(pairs, (pair) => pair.question, budgetTokens);
+
+      const questions: Record<string, { type: "noul"; instructions: string }> = {};
+      for (const pair of budget.kept) {
+        questions[pair.question.id] = { type: "noul", instructions: pair.question.instructions };
+      }
+
       const output = await judge(
         {
           state: {
             goal: event.customInstructions ?? "Continue the user's ongoing coding task",
-            entries: entries.map((entry) => ({
-              index: entry.index,
-              text: entry.text,
-              candidate: entry.candidate,
-            })),
+            entryCount: entries.length,
+            judged: budget.kept.map((pair) => pair.entry.index),
           },
           questions,
           threshold: COMPACT_KEEP_THRESHOLD,
@@ -205,18 +232,32 @@ export class Compactor {
         if (decision.passed) kept.push(`[entry ${entry.index}] ${entry.text}`);
       }
 
+      let unjudgedNote = "";
+      if (unanswered > 0) {
+        unjudgedNote =
+          `${unanswered} candidate entry(ies) were not answered and were kept rather than dropped.`;
+        if (budget.dropped.length > 0) {
+          unjudgedNote +=
+            ` ${budget.dropped.length} of those were over the request budget for the answering backend's window.`;
+        }
+      }
+
       const summary = [
         "adecider compaction: tool history retained selectively, conversation intent preserved.",
         event.customInstructions ? `Goal: ${event.customInstructions}` : "",
-        unanswered > 0
-          ? `${unanswered} candidate entry(ies) were not answered and were kept rather than dropped.`
-          : "",
+        unjudgedNote,
         kept.length > 0 ? kept.join("\n") : "No historical tool entries were judged necessary to retain.",
       ]
         .filter(Boolean)
         .join("\n");
 
-      return { summary, kept: kept.length, considered: entries.length };
+      return {
+        summary,
+        kept: kept.length,
+        considered: entries.length,
+        judged: budget.kept.length,
+        budgeted: budget.dropped.length,
+      };
     } catch (error) {
       if (error instanceof SystemOneError && error.code === "calibration") {
         // An uncalibrated backend cannot ground a keep/drop decision. pi's own compaction is the safe

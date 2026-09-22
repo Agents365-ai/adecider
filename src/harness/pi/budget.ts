@@ -21,6 +21,8 @@
  * over-estimates deliberately, and the budget leaves headroom.
  */
 
+import { estimateTokens } from "../../backends/types.ts";
+
 export interface BudgetedQuestion {
   id: string;
   instructions: string;
@@ -39,11 +41,10 @@ export interface BudgetResult<T> {
  * Calibrated against the measurements in the header: a question with a 160-character description
  * serializes to about 270 characters and costs about 80 tokens in practice, while this formula
  * predicts 20 + 0.35 * 270 = 115. It over-estimates by roughly 1.4x, which is the direction that
- * keeps a request inside the window rather than truncating it.
+ * keeps a request inside the window rather than truncating it. The formula itself lives in
+ * `src/backends/types.ts`, so the adapter that refuses an over-window request refuses with the
+ * same number this budget is computed with.
  */
-export function estimateTokens(text: string): number {
-  return 20 + Math.ceil(text.length * 0.35);
-}
 
 /** Shorten a candidate description so one question cannot consume the window by itself. */
 export function clip(text: string, maxChars: number): string {
