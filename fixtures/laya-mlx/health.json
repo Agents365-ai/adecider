@@ -1,0 +1,1 @@
+{"status": "ok", "service": "laya-mlx-local/1", "device": "Device(gpu, 0)", "loaded": ["english", "multilingual"], "hub_dir": "/Users/niehu/llm/laya-mlx/models/hub", "checkpoints": ["english", "multilingual"], "runtime": "mlx"}
