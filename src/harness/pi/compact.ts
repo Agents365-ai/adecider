@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import type { BackendChain } from "../../backends/index.ts";
 import { SystemOneError } from "../../errors.ts";
 import { judge } from "../../judge.ts";
@@ -23,6 +24,24 @@ export const COMPACT_MAX_ENTRIES = 24;
 
 /** Request-side cap on one entry's text, so a single tool result cannot consume the window by itself. */
 const ENTRY_CHARS = 300;
+
+/**
+ * Custom entry type for the transcript marker.
+ *
+ * pi renders its own compaction card as `[compaction]` whoever supplied the summary, and that label
+ * comes from a component this API cannot replace. A custom entry is the documented way for an
+ * extension to say what it did, and a custom entry is stored without being sent to the model, so the
+ * marker costs no context.
+ */
+export const COMPACT_MARKER_TYPE = "adecider-compact";
+
+interface CompactMarker {
+  kept: number;
+  considered: number;
+  judged: number;
+  budgeted: number;
+  backend: string;
+}
 
 export interface CompactOutcome {
   summary: string;
@@ -119,6 +138,9 @@ export class Compactor {
 
   private chain: () => BackendChain | null;
 
+  /** What the last compaction this layer supplied did, for the marker appended after the card. */
+  private lastMarker: CompactMarker | null = null;
+
   constructor(chain: () => BackendChain | null, enabled = false) {
     this.chain = chain;
     this.enabled = enabled;
@@ -129,6 +151,38 @@ export class Compactor {
   }
 
   install(pi: ExtensionAPI): void {
+    pi.registerEntryRenderer<CompactMarker>(COMPACT_MARKER_TYPE, (entry, { expanded }, theme) => {
+      const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+      const label = theme.fg("customMessageLabel", "\x1b[1m[adecider compaction]\x1b[22m");
+      const data = entry.data;
+      if (!data) {
+        box.addChild(new Text(`${label} ${theme.fg("customMessageText", "summary supplied")}`, 0, 0));
+        return box;
+      }
+      box.addChild(
+        new Text(
+          `${label} ${theme.fg("customMessageText", `kept ${data.kept} of ${data.considered} entries`)}`,
+          0,
+          0
+        )
+      );
+      if (expanded) {
+        const details = [`judged ${data.judged}`, `backend ${data.backend}`];
+        if (data.budgeted > 0) details.push(`${data.budgeted} over the request budget`);
+        box.addChild(new Text(theme.fg("dim", details.join(", ")), 0, 0));
+      }
+      return box;
+    });
+
+    // pi's own compaction runs on the same event, so the marker is appended only when the summary
+    // came from a handler, which on this machine is this one.
+    pi.on("session_compact", (event) => {
+      const marker = this.lastMarker;
+      this.lastMarker = null;
+      if (!event.fromExtension || !marker) return;
+      pi.appendEntry<CompactMarker>(COMPACT_MARKER_TYPE, marker);
+    });
+
     pi.on("session_before_compact", async (event, ctx) => {
       const outcome = await this.compact(event, ctx);
       if (!outcome.summary) return;
@@ -250,6 +304,14 @@ export class Compactor {
       ]
         .filter(Boolean)
         .join("\n");
+
+      this.lastMarker = {
+        kept: kept.length,
+        considered: entries.length,
+        judged: budget.kept.length,
+        budgeted: budget.dropped.length,
+        backend: output.backend,
+      };
 
       return {
         summary,

@@ -161,6 +161,20 @@ same session. The summary is a retained-entry list, not prose: **this feature se
 does not summarize conversation**, and when a compaction has no tool traffic to judge it declines and
 lets pi summarize.
 
+A compaction this layer supplied is also marked in the transcript, because pi renders its own card as
+`[compaction]` whoever wrote the summary (the label comes from `CompactionSummaryMessageComponent`,
+which an extension cannot replace). A custom entry rendered next to the card says what happened:
+
+```text
+ [adecider compaction] kept 3 of 7 entries
+ [compaction]
+ Compacted from 24,136 tokens (ctrl+o to expand)
+```
+
+The marker is stored as a custom entry, so it costs no context, and it is appended only when the
+summary came from this layer: pi summarizing for itself is not labelled as this layer's work. Expanding
+it shows the judged and over-budget counts and the backend that answered.
+
 Getting there found two real bugs, both only visible against a real session:
 
 1. pi's entries are `{type: "message", message: {role: "toolResult"}}`, with the role nested and

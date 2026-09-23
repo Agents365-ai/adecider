@@ -14,14 +14,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { EntryRenderer, ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { RPC_REQUEST, RPC_REPLY_PREFIX, RPC_TIMEOUT_MS, rpcCall, type RpcReply } from "../src/harness/pi/rpc.ts";
 import { Orchestrator, buildWorkflowScript, determineTopology } from "../src/harness/pi/orchestrator.ts";
 import { AutoModelRouter } from "../src/harness/pi/model-router.ts";
 import { designEvaluation } from "../src/harness/pi/designer.ts";
 import { ToolGuard } from "../src/harness/pi/tool-guard.ts";
-import { Compactor } from "../src/harness/pi/compact.ts";
+import { Compactor, COMPACT_MARKER_TYPE } from "../src/harness/pi/compact.ts";
 import { BackendChain } from "../src/backends/index.ts";
 import type { SystemOneConfig } from "../src/config.ts";
 import { startFakeLaya } from "./helpers/fake-laya.ts";
@@ -83,19 +83,29 @@ function fakeApi(options: { setModel?: (model: unknown) => boolean | Promise<boo
   bus: FakeBus;
   hooks: FakeHooks;
   messages: FakeMessage[];
+  appended: Array<{ customType: string; data: unknown }>;
+  entryRenderers: Map<string, EntryRenderer>;
 } {
   const bus = new FakeBus();
   const hooks = new FakeHooks();
   const messages: FakeMessage[] = [];
+  const appended: Array<{ customType: string; data: unknown }> = [];
+  const entryRenderers = new Map<string, EntryRenderer>();
   const api = {
     on: hooks.on.bind(hooks),
     events: { on: bus.on.bind(bus), emit: bus.emit.bind(bus) },
     sendMessage: (message: FakeMessage) => {
       messages.push(message);
     },
+    appendEntry: (customType: string, data?: unknown) => {
+      appended.push({ customType, data });
+    },
+    registerEntryRenderer: (customType: string, renderer: EntryRenderer) => {
+      entryRenderers.set(customType, renderer);
+    },
     setModel: options.setModel ?? (() => true),
   };
-  return { api: api as unknown as ExtensionAPI, bus, hooks, messages };
+  return { api: api as unknown as ExtensionAPI, bus, hooks, messages, appended, entryRenderers };
 }
 
 interface PendingRequest {
@@ -759,6 +769,60 @@ test("compaction budgets its questions against the window and keeps what it cann
     const state = fake.decideRequests[0]?.["state"] as { entryCount: number };
     assert.equal(state.entryCount, 8);
     assert.doesNotMatch(JSON.stringify(state), /lorem ipsum/, "entry text is not duplicated into the state");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a compaction this layer supplied is marked in the transcript, and pi's own is not", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const { api, hooks, appended, entryRenderers } = fakeApi();
+    const compactor = new Compactor(() => chainFor(fake.url), true);
+    compactor.install(api);
+
+    const branchEntries = [
+      { type: "message", message: { role: "user", content: "fix the refund path" } },
+      { type: "message", message: { role: "toolResult", toolName: "read", content: "40 lines" } },
+    ];
+    const [handled] = await hooks.emit(
+      "session_before_compact",
+      { branchEntries, preparation: { firstKeptEntryId: "entry-4", tokensBefore: 1211 } },
+      fakeCtx().ctx
+    );
+    assert.ok((handled as { compaction?: unknown }).compaction, "this layer supplied the summary");
+
+    await hooks.emit(
+      "session_compact",
+      { fromExtension: true, compactionEntry: { tokensBefore: 1211 }, reason: "manual", willRetry: false },
+      fakeCtx().ctx
+    );
+    assert.equal(appended.length, 1, "one marker, and only for the compaction this layer judged");
+    assert.equal(appended[0]?.customType, COMPACT_MARKER_TYPE);
+    assert.deepEqual(appended[0]?.data, {
+      kept: 2,
+      considered: 2,
+      judged: 1,
+      budgeted: 0,
+      backend: "fake",
+    });
+
+    // pi summarizing for itself is not this layer's work to label.
+    await hooks.emit(
+      "session_compact",
+      { fromExtension: false, compactionEntry: { tokensBefore: 10 }, reason: "manual", willRetry: false },
+      fakeCtx().ctx
+    );
+    assert.equal(appended.length, 1, "no marker for a summary pi wrote itself");
+
+    const renderer = entryRenderers.get(COMPACT_MARKER_TYPE);
+    assert.ok(renderer, "the marker has its own renderer");
+    const theme = { fg: (_role: string, text: string) => text, bg: (_role: string, text: string) => text };
+    const component = renderer({ data: appended[0]?.data } as never, { expanded: true }, theme as never);
+    const lines = component?.render(200).join("\n") ?? "";
+    assert.match(lines, /\[adecider compaction\]/, "the label says who judged it");
+    assert.match(lines, /kept 2 of 2 entries/);
+    assert.match(lines, /backend fake/);
   } finally {
     await fake.close();
   }
