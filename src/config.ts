@@ -19,6 +19,24 @@ export interface SystemOneConfig {
   backends: Record<string, BackendSpec>;
   allowCloud: boolean;
   configPath: string;
+  /** Harness features this machine opts into. Absent or unset means every automatic feature is off. */
+  harness?: HarnessFlags;
+}
+
+/**
+ * Which pi harness features are on by default on this machine.
+ *
+ * The command line can enable one for a single session and the `ADECIDER_*` variables can enable one
+ * for a shell, but neither survives how pi is launched. This section is the durable opt-in, which is
+ * why it exists: pi itself does not persist extension flags, so an extension that wants a different
+ * default has to read its own config. Only `true` counts here; a feature is off unless it is named.
+ */
+export interface HarnessFlags {
+  auto?: boolean;
+  autoModel?: boolean;
+  toolGuard?: boolean;
+  compact?: boolean;
+  agents?: boolean;
 }
 
 /**
@@ -62,13 +80,17 @@ interface ConfigFile {
   chain?: unknown;
   backends?: unknown;
   allowCloud?: unknown;
+  harness?: unknown;
 }
+
+const HARNESS_KEYS = ["auto", "autoModel", "toolGuard", "compact", "agents"] as const;
 
 export function loadConfig(overrides?: { configPath?: string }): SystemOneConfig {
   const configPath = overrides?.configPath ?? process.env["ADECIDER_CONFIG"] ?? CONFIG_PATH;
   const backends: Record<string, BackendSpec> = { ...KNOWN_BACKENDS };
   let chain = [...DEFAULT_CHAIN];
   let allowCloud = false;
+  const harness: HarnessFlags = {};
 
   let file: ConfigFile | null = null;
   try {
@@ -82,6 +104,12 @@ export function loadConfig(overrides?: { configPath?: string }): SystemOneConfig
       chain = file.chain.filter((name): name is string => typeof name === "string");
     }
     if (file.allowCloud === true) allowCloud = true;
+    if (file.harness && typeof file.harness === "object") {
+      const raw = file.harness as Record<string, unknown>;
+      for (const key of HARNESS_KEYS) {
+        if (raw[key] === true) harness[key] = true;
+      }
+    }
     if (file.backends && typeof file.backends === "object") {
       for (const [name, raw] of Object.entries(file.backends as Record<string, unknown>)) {
         if (!raw || typeof raw !== "object") continue;
@@ -106,5 +134,5 @@ export function loadConfig(overrides?: { configPath?: string }): SystemOneConfig
   const envCloud = parseBoolean(process.env["ADECIDER_ALLOW_CLOUD"]);
   if (envCloud !== undefined) allowCloud = envCloud;
 
-  return { chain, backends, allowCloud, configPath };
+  return { chain, backends, allowCloud, configPath, harness };
 }

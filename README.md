@@ -386,6 +386,19 @@ stricter than the `0.65` that suits a suggestion.
 Environment overrides: `ADECIDER_CONFIG` (config path), `ADECIDER_CHAIN` (comma-separated chain),
 `ADECIDER_ALLOW_CLOUD`.
 
+A `harness` section turns pi's automatic features on by default **on this machine**, which neither the
+command line flag nor the `ADECIDER_*` variables can do durably, because pi does not persist extension
+flags:
+
+```json
+{ "harness": { "compact": true } }
+```
+
+The names are `auto`, `autoModel`, `toolGuard`, `compact`, `agents`. Only an explicit `true` counts, and
+a feature is off unless it is named, so this is an opt-in rather than a new default. `/adecider status`
+reports what is on, and `/adecider <feature> off` turns one off for the session without editing the
+file.
+
 Chain order matters: the first backend that passes a health probe takes the call. Probe results are
 cached for 5 seconds.
 

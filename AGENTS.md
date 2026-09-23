@@ -105,7 +105,10 @@ test, do not delete it.
    `jevQuestions()` in `src/backends/jev.ts` rewrites it. A request shape this layer accepts must not
    fail on the dialect of the backend that happens to answer it; `test/jev.test.ts` pins both halves.
 10. **Automatic features are off by default**, matching pi-jev. `/adecider status` reports what is on.
-   Auto mode is the only feature that spends a request per prompt.
+   Auto mode is the only feature that spends a request per prompt. A machine may opt in durably
+   through the `harness` section of `~/.pi/agent/adecider.json`, where only an explicit `true` counts:
+   pi does not persist extension flags, so this is the only way a feature is on for every session
+   without every launcher remembering a flag.
 11. **The Jev endpoint is allowlisted** to the vendor host or loopback, because it is the one adapter
    that attaches a bearer key to every request; a `baseUrl` anywhere else is refused by name when the
    backend is built (`jevEndpoint()`). Hosts stay open for the other adapters, where the endpoint is

@@ -7,7 +7,8 @@
  * rules, and the MCP server. Both halves call the same `judge()`, so a judgment cannot differ
  * depending on how it was reached.
  *
- * Feature defaults match pi-jev: everything automatic is off. `/adecider status` reports what is on.
+ * Feature defaults match pi-jev: everything automatic is off, unless this machine opts in through the
+ * `harness` section of its config file. `/adecider status` reports what is on.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -27,7 +28,22 @@ function envEnabled(name: string): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+/**
+ * Whether a harness feature is on when the command line says nothing.
+ *
+ * The config file is the durable opt-in (it survives however pi was launched) and the environment
+ * variable is the shell-level one. The command line still has the last word in both directions: pi
+ * hands an explicit flag value through, and that value is what the feature reads.
+ */
+export function harnessDefault(envName: string, configured: boolean | undefined): boolean {
+  return envEnabled(envName) || configured === true;
+}
+
 export default function (pi: ExtensionAPI) {
+  // Read once at session start: the config file decides which features are on by default here, and a
+  // feature that is off costs nothing to leave off.
+  const harness = loadConfig().harness ?? {};
+
   // Built once per session. The chain caches health probes for a few seconds internally, so a
   // backend that goes down mid-session is noticed without re-probing on every call.
   let chain: BackendChain | null = null;
@@ -48,27 +64,27 @@ export default function (pi: ExtensionAPI) {
   pi.registerFlag(flags.auto, {
     description: "Route tools and suggest skills with a System One backend on every prompt",
     type: "boolean",
-    default: envEnabled("ADECIDER_AUTO"),
+    default: harnessDefault("ADECIDER_AUTO", harness.auto),
   });
   pi.registerFlag(flags.autoModel, {
     description: "Choose a model per prompt from local heuristics (no backend request, no decision model)",
     type: "boolean",
-    default: envEnabled("ADECIDER_AUTO_MODEL"),
+    default: harnessDefault("ADECIDER_AUTO_MODEL", harness.autoModel),
   });
   pi.registerFlag(flags.toolGuard, {
     description: "Judge tool calls before execution and label failures after (one backend request per call)",
     type: "boolean",
-    default: envEnabled("ADECIDER_TOOL_GUARD"),
+    default: harnessDefault("ADECIDER_TOOL_GUARD", harness.toolGuard),
   });
   pi.registerFlag(flags.compact, {
     description: "Let a decision model choose which history entries survive /compact",
     type: "boolean",
-    default: envEnabled("ADECIDER_COMPACT"),
+    default: harnessDefault("ADECIDER_COMPACT", harness.compact),
   });
   pi.registerFlag(flags.agents, {
     description: "Dispatch orchestration workflows to a subagent runner",
     type: "boolean",
-    default: envEnabled("ADECIDER_AGENTS"),
+    default: harnessDefault("ADECIDER_AGENTS", harness.agents),
   });
 
   const auto = new AutoRouter(getChain, Boolean(pi.getFlag(flags.auto)));

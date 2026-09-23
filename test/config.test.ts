@@ -128,3 +128,26 @@ test("a config path can be passed in, which is what the tests and the CLI both r
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a config file opts a harness feature in, and only an explicit true counts", () => {
+  withConfig(
+    JSON.stringify({
+      chain: ["laya-mlx"],
+      harness: { compact: true, toolGuard: false, auto: "yes", nonsense: true },
+    }),
+    {},
+    () => {
+      assert.deepEqual(
+        loadConfig().harness,
+        { compact: true },
+        "false, a string, and an unknown key are all not an opt-in"
+      );
+    }
+  );
+  withConfig(undefined, {}, () => {
+    assert.deepEqual(loadConfig().harness, {}, "no config file means every automatic feature is off");
+  });
+  withConfig("{ not json", {}, () => {
+    assert.deepEqual(loadConfig().harness, {}, "a config that cannot be read opts nothing in");
+  });
+});

@@ -17,6 +17,7 @@ import { buildWorkflowScript, classifyTopologyFallback } from "../src/harness/pi
 import { validateDesign } from "../src/harness/pi/designer.ts";
 import { Compactor } from "../src/harness/pi/compact.ts";
 import { routeTools } from "../src/harness/pi/router.ts";
+import { harnessDefault } from "../src/harness/pi/index.ts";
 import { findSkills } from "../src/harness/pi/skills.ts";
 import { ToolGuard } from "../src/harness/pi/tool-guard.ts";
 import { registerAdapterTools, PI_TOOL_NAMES } from "../src/harness/pi/tools.ts";
@@ -697,4 +698,23 @@ test("skills come from the command context when it lists them, and from commands
     ["pdf"],
     "a context that throws falls back instead of failing the feature"
   );
+});
+
+test("a harness feature is on when the shell or the config says so, and off otherwise", () => {
+  const name = "ADECIDER_TEST_SWITCH";
+  const saved = process.env[name];
+  try {
+    delete process.env[name];
+    assert.equal(harnessDefault(name, undefined), false, "off unless something turns it on");
+    assert.equal(harnessDefault(name, false), false, "an explicit false is not an opt-in");
+    assert.equal(harnessDefault(name, true), true, "the config file is the durable opt-in");
+    process.env[name] = "1";
+    assert.equal(harnessDefault(name, undefined), true, "the shell can opt in for a session");
+    process.env[name] = "0";
+    assert.equal(harnessDefault(name, undefined), false, "0 is not an opt-in");
+    assert.equal(harnessDefault(name, true), true, "and it does not cancel the config's opt-in");
+  } finally {
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
+  }
 });
