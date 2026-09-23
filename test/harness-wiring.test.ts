@@ -797,6 +797,8 @@ test("a compaction this layer supplied is marked in the transcript, and pi's own
       { fromExtension: true, compactionEntry: { tokensBefore: 1211 }, reason: "manual", willRetry: false },
       fakeCtx().ctx
     );
+    // The append waits a tick, so pi's own card lands first in the transcript.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(appended.length, 1, "one marker, and only for the compaction this layer judged");
     assert.equal(appended[0]?.customType, COMPACT_MARKER_TYPE);
     assert.deepEqual(appended[0]?.data, {
@@ -821,7 +823,7 @@ test("a compaction this layer supplied is marked in the transcript, and pi's own
     const component = renderer({ data: appended[0]?.data } as never, { expanded: true }, theme as never);
     const lines = component?.render(200).join("\n") ?? "";
     assert.match(lines, /\[adecider compaction\]/, "the label says who judged it");
-    assert.match(lines, /kept 2 of 2 entries/);
+    assert.match(lines, /default summarizer skipped, kept 2 of 2 entries/);
     assert.match(lines, /backend fake/);
   } finally {
     await fake.close();

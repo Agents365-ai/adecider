@@ -161,7 +161,10 @@ export class Compactor {
       }
       box.addChild(
         new Text(
-          `${label} ${theme.fg("customMessageText", `kept ${data.kept} of ${data.considered} entries`)}`,
+          `${label} ${theme.fg(
+            "customMessageText",
+            `default summarizer skipped, kept ${data.kept} of ${data.considered} entries`
+          )}`,
           0,
           0
         )
@@ -175,11 +178,15 @@ export class Compactor {
     });
 
     // pi's own compaction runs on the same event, so the marker is appended only when the summary
-    // came from a handler, which on this machine is this one.
-    pi.on("session_compact", (event) => {
+    // came from a handler, which on this machine is this one. The append waits a tick because pi
+    // writes its own card after the handlers return: appending from inside the event drew the marker
+    // above the card live, while a replay of the same session drew it below, which is the order a
+    // reader wants (the card, then what was skipped to produce it).
+    pi.on("session_compact", async (event) => {
       const marker = this.lastMarker;
       this.lastMarker = null;
       if (!event.fromExtension || !marker) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
       pi.appendEntry<CompactMarker>(COMPACT_MARKER_TYPE, marker);
     });
 

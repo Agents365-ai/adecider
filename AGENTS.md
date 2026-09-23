@@ -190,6 +190,10 @@ was written against. So:
   socket of its own. The tests must not depend on what is running here: `KNOWN_BACKENDS` joins every
   config, so a live 8317 changes any assertion over the whole catalogue (see `test/cli.test.ts`).
 - Never probe a down backend in a retry loop. Health results are cached for 5 seconds for this reason.
+- pi paints its own compaction card after the `session_compact` handlers return, so a custom entry
+  appended from that event can render above the card while the compaction is happening, even though the
+  stored session puts the card first. Judge transcript order by replaying the session, not by what the
+  live view showed during the compaction.
 - A `noul` question carrying `criteria` is the one place the backends disagree on request shape; see
   invariant 9 before touching `src/types.ts`, `src/judge.ts` validation, or either backend's request
   builder.

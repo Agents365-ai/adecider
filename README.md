@@ -163,17 +163,23 @@ lets pi summarize.
 
 A compaction this layer supplied is also marked in the transcript, because pi renders its own card as
 `[compaction]` whoever wrote the summary (the label comes from `CompactionSummaryMessageComponent`,
-which an extension cannot replace). A custom entry rendered next to the card says what happened:
+which an extension cannot replace). A custom entry carries what pi's card cannot say, in the order the
+session stores it:
 
 ```text
- [adecider compaction] kept 3 of 7 entries
  [compaction]
- Compacted from 24,136 tokens (ctrl+o to expand)
+ Compacted from 24,466 tokens (ctrl+o to expand)
+ [adecider compaction] default summarizer skipped, kept 2 of 9 entries
 ```
 
-The marker is stored as a custom entry, so it costs no context, and it is appended only when the
-summary came from this layer: pi summarizing for itself is not labelled as this layer's work. Expanding
-it shows the judged and over-budget counts and the backend that answered.
+There is still one compaction: the card is pi's rendering of the single compaction entry, and its
+summary is the one this layer supplied, so pi's own summarizer never ran (`fromHook: true`,
+`usage: None`). The marker appears below the card whenever the session is replayed. It can appear
+above it during the compaction itself, because pi paints its own card after the handlers return, and
+that paint order is not something an extension can set. The marker is stored as a custom entry, so it
+costs no context, and it is appended only when the summary came from this layer: pi summarizing for
+itself gets no marker. Expanding it shows the judged and over-budget counts and the backend that
+answered.
 
 Getting there found two real bugs, both only visible against a real session:
 
