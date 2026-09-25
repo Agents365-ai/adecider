@@ -1,5 +1,7 @@
 # adecider
 
+**English** | [中文](README.zh-CN.md)
+
 Typed System One decisions for any coding agent. One call sends a piece of state plus a map of typed
 questions (`noul`, `choice`, `score`) and gets back one calibrated answer per question id, from a single
 request, as a number rather than prose. Backends are pluggable: a local Laya checkpoint by default,

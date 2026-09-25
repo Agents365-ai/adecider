@@ -1,10 +1,11 @@
 # AGENTS.md
 
 Operating guide for coding agents working in this repo. `README.md` is the user-facing reference,
-`MEASUREMENTS.md` is the dated evidence behind it, and neither is a spec to extend: this file tells you
-what may be changed without breaking the thing. The design record that produced it, once `PLAN.md`,
-was removed on 2026-09-25: the reasoning that still matters lives in the doc comments and in this file,
-and the original is reachable with `git log --diff-filter=D -- PLAN.md`.
+`README.zh-CN.md` is its Chinese translation, `MEASUREMENTS.md` is the dated evidence behind both, and
+none of them is a spec to extend: this file tells you what may be changed without breaking the thing.
+The design record that produced it, once `PLAN.md`, was removed on 2026-09-25: the reasoning that still
+matters lives in the doc comments and in this file, and the original is reachable with
+`git log --diff-filter=D -- PLAN.md`.
 
 ## What this repo is
 
@@ -166,7 +167,10 @@ was written against. `README.md` states structure and usage; the figures live in
 ## Conventions
 
 - Comments: every file opens with a doc comment stating its role and the measured reason it exists.
-  Extend that style; keep comments English; no non-English text anywhere in the repo.
+  Extend that style; keep comments English; `README.zh-CN.md` is the one file allowed non-English text,
+  and it is a translation of `README.md`, so the two change together and neither gains a section the
+  other lacks. `MEASUREMENTS.md` stays English: its figures are quoted verbatim into other documents,
+  and a translated number is a second place for it to be wrong.
 - No em dashes anywhere (code, comments, commits, docs). Use a comma, colon, parentheses, or split the
   sentence.
 - Minimal change is the default. No speculative abstraction, no new config knob, no dependency, no
