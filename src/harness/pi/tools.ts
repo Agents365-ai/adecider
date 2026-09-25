@@ -25,10 +25,24 @@ const QUESTION_MAP = Type.Record(
   Type.String(),
   Type.Object({
     type: Type.Union([Type.Literal("choice"), Type.Literal("noul"), Type.Literal("score")]),
-    instructions: Type.String(),
-    criteria: Type.Optional(Type.Any()),
+    instructions: Type.String({ description: "The judgment to make, stated as a claim for noul" }),
+    criteria: Type.Optional(
+      Type.Any({
+        description:
+          "Required for choice (an object mapping option keys to descriptions) and for score (an array of " +
+          "rubric levels ordered lowest first); optional for noul, where it is a clarification string",
+      })
+    ),
   })
 );
+
+const EVALUATE_DESCRIPTION =
+  "Ask typed System One questions (choice, noul, score) about a piece of state and get one calibrated answer " +
+  "per question id from a single call. Use it for structured judgments and classifications instead of prose. " +
+  `The questions argument is an object mapping each stable id to one question, as in ` +
+  `{"q1": {"type": "noul", "instructions": "the claim to test"}}: instructions is required and must not be empty, ` +
+  "noul takes the claim in instructions, choice takes a criteria object that maps option keys to descriptions, " +
+  "and score takes a criteria array of rubric levels ordered lowest first.";
 
 export function registerAdapterTools(pi: ExtensionAPI, chain: () => BackendChain | null): void {
   pi.registerTool({
@@ -148,9 +162,7 @@ export function registerAdapterTools(pi: ExtensionAPI, chain: () => BackendChain
   pi.registerTool({
     name: "adecider_evaluate",
     label: "Adecider Evaluate",
-    description:
-      "Ask typed System One questions (choice, noul, score) about a piece of state and get one calibrated answer " +
-      "per question id from a single call. Use it for structured judgments and classifications instead of prose.",
+    description: EVALUATE_DESCRIPTION,
     promptSnippet: "Perform fast calibrated structured decisions and classifications over state",
     promptGuidelines: [
       "Use adecider_evaluate when you need a probability, a categorical choice, or a rubric score rather than generated text.",

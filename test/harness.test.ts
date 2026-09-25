@@ -51,6 +51,8 @@ interface FakeTool {
   name: string;
   description: string;
   parameters: unknown;
+  /** The bullets pi appends to its system prompt's rules section while this tool is registered. */
+  promptGuidelines?: string[];
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
@@ -569,6 +571,37 @@ test("the adapter registers exactly the three tool names a pi-jev migration maps
     assert.ok(
       pi.registered.get("adecider_find_tools")?.description.includes("activate"),
       "routing is the half that only exists inside pi, so the tool has to say that it acts"
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
+test("adecider_evaluate states the payload shape a caller has to build", async () => {
+  const fake = await startFakeLaya({ echo: 0.9 });
+  try {
+    const pi = fakePi({ active: [], inactive: INACTIVE });
+    registerAdapterTools(pi.api, () => chainFor(fake));
+
+    const tool = pi.registered.get("adecider_evaluate");
+    const description = tool?.description ?? "";
+    // Measured 2026-09-25, 16 pi sessions against two backends: of 38 adecider_evaluate calls, only
+    // 13 got through, and every failure was the model building an unusable payload, not the backend
+    // answering badly. The classes were a question missing instructions, a questions map that was not
+    // an object, and a choice question with no criteria object. A description that states the shape is
+    // the one lever the measurement supports, because the model cannot see a parameter schema for a
+    // tool it has not called yet.
+    const example = description.match(/\{"q1".*?\}\}/)?.[0];
+    assert.ok(example, "the description carries a payload example the model can copy");
+    const parsed = JSON.parse(example) as Record<string, { type: string; instructions: string }>;
+    assert.equal(parsed.q1?.type, "noul");
+    assert.ok(parsed.q1?.instructions, "the example carries the required field, not just the key");
+    assert.match(description, /option keys/i);
+    assert.match(description, /rubric levels/i);
+
+    assert.ok(
+      (tool?.promptGuidelines ?? []).some((bullet) => /one round trip/.test(bullet)),
+      "batching stays a guideline: many questions over one state must remain one call"
     );
   } finally {
     await fake.close();
