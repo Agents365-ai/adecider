@@ -1,8 +1,10 @@
 # AGENTS.md
 
 Operating guide for coding agents working in this repo. `README.md` is the user-facing reference,
-`PLAN.md` is the design record that produced it. Neither is a spec to extend: this file tells you what
-may be changed without breaking the thing.
+`MEASUREMENTS.md` is the dated evidence behind it, and neither is a spec to extend: this file tells you
+what may be changed without breaking the thing. The design record that produced it, once `PLAN.md`,
+was removed on 2026-09-25: the reasoning that still matters lives in the doc comments and in this file,
+and the original is reachable with `git log --diff-filter=D -- PLAN.md`.
 
 ## What this repo is
 
@@ -116,13 +118,23 @@ test, do not delete it.
 
 ## Verification culture
 
-The README's claims are all measured, and a number without a measurement is the failure mode this repo
-was written against. So:
+The claims this repo makes are all measured, and a number without a measurement is the failure mode it
+was written against. `README.md` states structure and usage; the figures live in `MEASUREMENTS.md`. So:
 
-- A number you add to `README.md` or a doc comment must come from a command you actually ran, with the
-  date and the machine where that matters. Prefer re-running over copying an old figure.
+- A number you add to `MEASUREMENTS.md` or a doc comment must come from a command you actually ran,
+  with the date and the machine where that matters. Prefer re-running over copying an old figure.
+  `README.md` states structure and usage only: a figure belongs in `MEASUREMENTS.md` with its date, and
+  a sentence in `README.md` that wants one points there instead of carrying a count.
 - Do not write counts that rot into documentation. `npm test` prints its own count, so point at the
-  command; the README's own written count was 29 while the suite ran 59.
+  command; a written count has already been wrong here once, 29 in the README against a suite that ran
+  59.
+- The `## How it works` diagram in `README.md` is mermaid and states structure only, never a
+  measurement: a diagram cannot carry a date or a caveat, and a wrong arrow is not a wrong number
+  anyone would catch. Verify a change to it by rendering the block, not by reading it. This machine
+  has mermaid-cli 11.12.0 with no bundled browser, so the render needs
+  `PUPPETEER_EXECUTABLE_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" mmdc -i x.mmd -o x.png -b white`.
+  The first version was a `flowchart TD` whose backend subgraph laid out on the far left with reversed
+  edges, which only rendering revealed.
 - Hermetic tests use `test/helpers/fake-laya.ts`, which replays a payload measured from `laya-mlx`
   including the fields Jev does not return, and covers both dialects plus the OpenAI-compatible routes.
   `test/conformance.test.ts` is the anti-drift net: the same numbers delivered in the Laya, Jev, and
@@ -132,7 +144,7 @@ was written against. So:
   `test/openai.test.ts`); add a case there rather than a new file when a branch is missing. The pi-only
   paths live in `test/harness-wiring.test.ts` behind a fake event bus, model registry, and completion
   function, so a feature that acts on pi's state stays testable without a session.
-- Wall-clock latency is a measurement, not a contract: keep the numbers in `README.md` and never assert
+- Wall-clock latency is a measurement, not a contract: keep the numbers in `MEASUREMENTS.md` and never assert
   a duration in a test on a shared machine. What a latency regression actually was is an adapter that
   fans one judgment out into one request per question, so that is what is asserted (a fixed round-trip
   count for 1, 5, and 12 questions).
